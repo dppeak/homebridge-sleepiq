@@ -36,5 +36,9 @@
     "@types/node": "^22.19.15",
     "homebridge": "^1.11.3",
     "typescript": "^5.9.3"
+  },
+  "funding": {
+    "type": "paypal",
+    "url": "https://paypal.me/DavidPeak"
   }
 }
