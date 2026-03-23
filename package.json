@@ -23,7 +23,7 @@
   },
   "homepage": "https://github.com/dppeak/homebridge-sleepiq#readme",
   "engines": {
-    "node": ">=18.20.4",
+    "node": ">=20.0.0",
     "homebridge": "^1.8.0"
   },
   "scripts": {
