@@ -4,16 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.8 (2026-03-23)
+
+### Bug Fixes
+
+- **Fixed intermittent 401 failures on outlet and write operations when the polling cycle and a HomeKit action fire at the same time.** The root cause: after a reauth both the poll and the write retried simultaneously with the same fresh session key. The Sleep Number API appeared to reject one of the two concurrent requests using the same key, causing the second to 401 even though reauth had just succeeded.
+- All public API methods are now serialized through a single promise queue so only one HTTP request (including any reauth+retry) is in-flight at a time. A HomeKit action that arrives while a poll is running will wait for the poll to finish before executing, ensuring the session key is stable for each request.
+
+---
+
 ## v6.0.7 (2026-03-23)
 
 ### Bug Fixes
 
-- **Fixed the root cause of persistent 401 errors on outlet/write operations.** The platform had two separate session-recovery code paths that were racing with each other:
-  - `SleepIQAPI._request()` would detect a 401, call `_reauth()`, get a fresh key, then retry
-  - Simultaneously, `platform.fetchData()` would also detect the 401 and call `authenticate()` → `login()`, which issued a second login request that invalidated the key `_reauth()` had just obtained
-  - The retry then fired with a revoked key and failed with 401 again
-- Removed all session-expiry handling from `platform.ts`. Session recovery is now handled exclusively by `SleepIQAPI._request()` via its automatic reauth+retry. The platform calls `authenticate()` only once at startup
-- `platform.ts` now suppresses 401 errors in `handleApiError()` during polling (they are already handled at the API layer and do not need to be logged)
+- Fixed the race condition where `platform.ts` was calling `authenticate()` concurrently with `SleepIQAPI._request()`'s own reauth, causing one to invalidate the other's fresh session key
+- Session recovery is now handled exclusively by the API layer; the platform calls `login()` only once at startup
 
 ---
 
@@ -21,9 +26,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changes
 
-- Added Homebridge logger to `SleepIQAPI` via `setLogger()` so re-authentication events appear in the Homebridge log at info level
-- Added info logging when re-authentication is triggered, succeeds, or fails
-- Added info log when a request is retried after re-authentication
+- Added Homebridge logger to `SleepIQAPI` for visible reauth diagnostics at info level
 
 ---
 
@@ -31,8 +34,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed 401 retry introduced in v6.0.4 not actually working: the retry was rebuilding the URL with the stale `_k` session key captured at call time
-- `_k` is now injected automatically by `_buildURL()` at request build time so retries always use the freshly updated session key
+- Fixed 401 retry rebuilding the URL with a stale `_k` session key
+- `_k` is now injected automatically at request build time
 
 ---
 
@@ -40,8 +43,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed write operations (outlet on/off, sleep number, foot warmer, foundation position) silently failing when the session expires
-- Added concurrency guard so multiple simultaneous 401s share a single re-authentication call
+- Fixed write operations silently failing when the session expires
+- Added concurrency guard for simultaneous 401s
 
 ---
 
@@ -50,9 +53,6 @@ All notable changes to this project will be documented in this file.
 ### New Features
 
 - Per-feature enable/disable toggles in the Homebridge UI config form
-- All toggles default to `true` so existing installs are unaffected
-- Disabling a feature removes cached accessories from HomeKit on restart
-- Polling skips API calls for disabled features
 
 ---
 
@@ -82,16 +82,10 @@ All notable changes to this project will be documented in this file.
 
 > **Community fork** of [DeeeeLAN/homebridge-sleepiq](https://github.com/DeeeeLAN/homebridge-sleepiq) at v4.2.0, maintained by [dppeak](https://github.com/dppeak).
 
-- Full TypeScript rewrite
-- Native `fetch` replaces `request-promise-native`
-- Homebridge 2.0 / HAP-NodeJS v1 compatibility
+- Full TypeScript rewrite with native `fetch` and Homebridge 2.0 compatibility
 
 ---
 
-## v4.2.0 (2020-10-16)
-
-- Add a "bothSidesOccupied" sensor
-
-## Older
+## v4.2.0 and earlier
 
 - Refer to GitHub commit history for details.

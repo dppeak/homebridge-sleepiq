@@ -5,9 +5,14 @@
  * (available since Node 18) and manually persists session cookies between
  * requests, replicating request-promise-native's `jar: true` behaviour.
  *
+ * All public API methods are serialized through a single promise queue so
+ * only one request is in-flight at a time. This prevents a concurrent poll
+ * and a HomeKit onSet from both triggering reauth simultaneously, which
+ * would cause one of them to retry with a key already invalidated by the
+ * other's login call.
+ *
  * The _k session key is injected automatically by _buildURL() at the moment
- * each request (or retry) is built, so re-authentication always uses the
- * fresh key rather than a stale value captured at call time.
+ * each request (or retry) is built, so retries always use the fresh key.
  */
 
 import type { Logging } from 'homebridge';
@@ -36,10 +41,17 @@ export class SleepIQAPI {
   testing: boolean;
 
   private _cookieStr: string;
-  /** Prevents concurrent re-authentication attempts. */
-  private _reauthPromise: Promise<void> | null = null;
   /** Homebridge logger — set by platform after construction. */
   private _log: Logging | null = null;
+  /**
+   * Serial request queue. Every public API call is enqueued here so that
+   * only one HTTP request (including its reauth+retry if needed) is
+   * in-flight at a time. This prevents concurrent requests from both
+   * triggering _reauth(), getting the same new key, then racing to use it
+   * — which causes one to arrive at the API while the other's retry is
+   * mid-flight, confusing the Sleep Number session state.
+   */
+  private _queue: Promise<void> = Promise.resolve();
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -66,8 +78,6 @@ export class SleepIQAPI {
     injectKey = true,
   ): string {
     const url = new URL(`${BASE_URL}/${path}`);
-    // Inject the current session key at build time so retries after reauth
-    // always use the fresh value rather than a stale capture.
     if (injectKey && this.key) {
       url.searchParams.set('_k', this.key);
     }
@@ -85,11 +95,6 @@ export class SleepIQAPI {
     return headers;
   }
 
-  /**
-   * Persist Set-Cookie headers from a response.
-   * Handles both the Node 18.14+ getSetCookie() array API and the older
-   * combined-string get('set-cookie') fallback.
-   */
   private _storeCookies(headers: Headers): void {
     let cookies: string[];
     if (typeof (headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function') {
@@ -106,45 +111,49 @@ export class SleepIQAPI {
   }
 
   /**
-   * Re-authenticate, deduplicating concurrent calls.
-   * If multiple requests fail with 401 simultaneously (e.g. rapid HomeKit
-   * toggles) they all await the same single login call rather than hammering
-   * the auth endpoint.
+   * Enqueue a job so it runs only after all previously enqueued jobs finish.
+   * Errors are swallowed from the queue chain itself (but still propagate to
+   * the caller via the returned promise) so one failure does not stall the queue.
    */
-  private async _reauth(): Promise<void> {
-    if (!this._reauthPromise) {
-      this._log?.info('SleepIQ session expired — re-authenticating...');
-      this._reauthPromise = this._request('PUT', 'login', {
-        body: { login: this.username, password: this.password },
-        injectKey: false,
-        allowRetry: false,
-      }).then(data => {
-        const parsed = JSON.parse(data) as Record<string, unknown>;
-        this.userID = parsed.userID as string;
-        this.key = parsed.key as string;
-        this._log?.info(`SleepIQ re-authentication successful (key: ...${this.key.slice(-6)}).`);
-      }).catch(err => {
-        this._log?.error('SleepIQ re-authentication failed:', String(err));
-        throw err;
-      }).finally(() => {
-        this._reauthPromise = null;
-      });
-    }
-    await this._reauthPromise;
+  private _enqueue<T>(job: () => Promise<T>): Promise<T> {
+    const result = this._queue.then(job, job);
+    // Advance the queue regardless of whether the job succeeds or fails.
+    this._queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   /**
-   * Core HTTP helper.
-   *
-   * Automatically injects _k: this.key into every request URL at build time,
-   * so retries after reauth always use the fresh session key.
-   *
-   * On a 401 response, re-authenticates and retries once. This covers all
-   * API calls including write operations fired from HomeKit onSet handlers.
-   *
-   * Throws a JSON-stringified { statusCode, body } object on failure.
+   * Re-authenticate. Called from within an already-queued job, so no
+   * additional serialization is needed here — no other request can start
+   * until the current queued job (including this reauth and its retry) finishes.
    */
-  private async _request(
+  private async _reauth(): Promise<void> {
+    this._log?.info('SleepIQ session expired — re-authenticating...');
+    try {
+      const data = await this._rawRequest('PUT', 'login', {
+        body: { login: this.username, password: this.password },
+        injectKey: false,
+        allowRetry: false,
+      });
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      this.userID = parsed.userID as string;
+      this.key = parsed.key as string;
+      this._log?.info(`SleepIQ re-authentication successful (key: ...${this.key.slice(-6)}).`);
+    } catch (err) {
+      this._log?.error('SleepIQ re-authentication failed:', String(err));
+      throw err;
+    }
+  }
+
+  /**
+   * Raw HTTP helper — executes immediately with no queuing.
+   * Only call this from within an already-queued job (i.e. from _enqueue's
+   * callback, or from _reauth which is itself called from there).
+   */
+  private async _rawRequest(
     method: string,
     path: string,
     options: {
@@ -174,11 +183,9 @@ export class SleepIQAPI {
 
     if (!response.ok) {
       if (response.status === 401 && allowRetry) {
-        // Re-authenticate then rebuild the URL — _buildURL will inject the
-        // new this.key into the URL on the retry.
         await this._reauth();
         this._log?.info(`Retrying ${method} ${path} with fresh session...`);
-        return this._request(method, path, { params, body, injectKey, allowRetry: false });
+        return this._rawRequest(method, path, { params, body, injectKey, allowRetry: false });
       }
       throw JSON.stringify({ statusCode: response.status, body: text });
     }
@@ -189,133 +196,142 @@ export class SleepIQAPI {
   // --- Authentication ----------------------------------------------------------
 
   async login(callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', 'login', {
-        body: { login: this.username, password: this.password },
-        injectKey: false,  // login endpoint does not use _k
-        allowRetry: false, // never retry a login call itself
-      });
-      const parsed = JSON.parse(data) as Record<string, unknown>;
-      this.json = parsed;
-      this.userID = parsed.userID as string;
-      this.key = parsed.key as string;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`Error: login PUT request failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', 'login', {
+          body: { login: this.username, password: this.password },
+          injectKey: false,
+          allowRetry: false,
+        });
+        const parsed = JSON.parse(data) as Record<string, unknown>;
+        this.json = parsed;
+        this.userID = parsed.userID as string;
+        this.key = parsed.key as string;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`Error: login PUT request failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Bed Status --------------------------------------------------------------
 
   async familyStatus(callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('GET', 'bed/familyStatus');
-      const parsed = JSON.parse(data) as FamilyStatusResponse;
-      this.json = parsed;
-      if (parsed.beds?.length) {
-        this.bedID = parsed.beds[this.defaultBed].bedId;
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('GET', 'bed/familyStatus');
+        const parsed = JSON.parse(data) as FamilyStatusResponse;
+        this.json = parsed;
+        if (parsed.beds?.length) {
+          this.bedID = parsed.beds[this.defaultBed].bedId;
+        }
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`Error: familyStatus GET request failed. Error: ${String(err)}`, err);
+        throw err;
       }
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`Error: familyStatus GET request failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    });
   }
 
   async bedPauseMode(callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('GET', `bed/${this.bedID}/pauseMode`);
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`Error: pauseMode GET request failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('GET', `bed/${this.bedID}/pauseMode`);
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`Error: pauseMode GET request failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   async setBedPauseMode(mode: 'on' | 'off', callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/pauseMode`, {
-        params: { mode },
-      });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`Error: pauseMode PUT request failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/pauseMode`, {
+          params: { mode },
+        });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`Error: pauseMode PUT request failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Sleep Number ------------------------------------------------------------
 
-  /** @param side 'L' or 'R' */
   async sleepNumber(side: string, num: number, callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/sleepNumber`, {
-        body: { side, sleepNumber: num },
-      });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`SleepNumber PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/sleepNumber`, {
+          body: { side, sleepNumber: num },
+        });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`SleepNumber PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Pump --------------------------------------------------------------------
 
   async forceIdle(callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/pump/forceIdle`);
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`forceIdle PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/pump/forceIdle`);
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`forceIdle PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Foundation --------------------------------------------------------------
 
   async preset(side: string, num: number, callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/foundation/preset`, {
-        body: { speed: 0, side, preset: num },
-      });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`preset PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/foundation/preset`, {
+          body: { speed: 0, side, preset: num },
+        });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`preset PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
-  /**
-   * Adjust a foundation actuator position.
-   * @param side     'L' or 'R'
-   * @param actuator 'H' (head) or 'F' (foot)
-   * @param num      Position value 0-100
-   */
   async adjust(side: string, actuator: string, num: number, callback?: ApiCallback): Promise<string> {
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/foundation/adjustment/micro`, {
-        body: { speed: 0, side, position: num, actuator },
-      });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`adjust PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/foundation/adjustment/micro`, {
+          body: { speed: 0, side, position: num, actuator },
+        });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`adjust PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   async foundationStatus(callback?: ApiCallback): Promise<string> {
@@ -352,24 +368,21 @@ export class SleepIQAPI {
       callback?.(str);
       return str;
     }
-
-    try {
-      const data = await this._request('GET', `bed/${this.bedID}/foundation/status`);
-      this.json = JSON.parse(data) as FoundationStatusResponse;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`foundationStatus GET failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('GET', `bed/${this.bedID}/foundation/status`);
+        this.json = JSON.parse(data) as FoundationStatusResponse;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`foundationStatus GET failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Outlets & Lightstrips ---------------------------------------------------
 
-  /**
-   * Get the status of a foundation outlet or lightstrip.
-   * @param num 1-4 (1-2 = power outlets, 3-4 = lightstrips)
-   */
   async outletStatus(num: string | number, callback?: ApiCallback): Promise<string> {
     if (this.testing) {
       const fixture: OutletStatusResponse = { bedId: this.bedID, outlet: Number(num), setting: 0, timer: null };
@@ -378,25 +391,21 @@ export class SleepIQAPI {
       callback?.(str);
       return str;
     }
-
-    try {
-      const data = await this._request('GET', `bed/${this.bedID}/foundation/outlet`, {
-        params: { outletId: String(num) },
-      });
-      this.json = JSON.parse(data) as OutletStatusResponse;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`outletStatus GET failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('GET', `bed/${this.bedID}/foundation/outlet`, {
+          params: { outletId: String(num) },
+        });
+        this.json = JSON.parse(data) as OutletStatusResponse;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`outletStatus GET failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
-  /**
-   * Set an outlet or lightstrip on/off.
-   * @param num     1-4
-   * @param setting 0 = off, 1 = on
-   */
   async outlet(num: number, setting: number, callback?: ApiCallback): Promise<string> {
     if (this.testing) {
       const fixture: OutletStatusResponse = { bedId: this.bedID, outlet: num, setting, timer: null };
@@ -405,18 +414,19 @@ export class SleepIQAPI {
       callback?.(str);
       return str;
     }
-
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/foundation/outlet`, {
-        body: { outletId: num, setting },
-      });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`outlet PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/foundation/outlet`, {
+          body: { outletId: num, setting },
+        });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`outlet PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
   // --- Foot Warming ------------------------------------------------------------
@@ -434,24 +444,19 @@ export class SleepIQAPI {
       callback?.(str);
       return str;
     }
-
-    try {
-      const data = await this._request('GET', `bed/${this.bedID}/foundation/footwarming`);
-      this.json = JSON.parse(data) as FootWarmingStatusResponse;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`footWarmingStatus GET failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('GET', `bed/${this.bedID}/foundation/footwarming`);
+        this.json = JSON.parse(data) as FootWarmingStatusResponse;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`footWarmingStatus GET failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 
-  /**
-   * Set the foot warmer temperature and timer.
-   * @param side  'L' or 'R'
-   * @param temp  '0' | '31' | '57' | '72'
-   * @param timer '30m' | '1h' | '2h' | '3h' | '4h' | '5h' | '6h'
-   */
   async footWarming(side: string, temp: string, timer: string, callback?: ApiCallback): Promise<string> {
     const isRight = side === 'R';
     const params: Record<string, string> = {};
@@ -473,14 +478,16 @@ export class SleepIQAPI {
       return str;
     }
 
-    try {
-      const data = await this._request('PUT', `bed/${this.bedID}/foundation/footwarming`, { params });
-      this.json = JSON.parse(data) as ApiResponseJSON;
-      callback?.(data);
-      return data;
-    } catch (err) {
-      callback?.(`footWarming PUT failed. Error: ${String(err)}`, err);
-      throw err;
-    }
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', `bed/${this.bedID}/foundation/footwarming`, { params });
+        this.json = JSON.parse(data) as ApiResponseJSON;
+        callback?.(data);
+        return data;
+      } catch (err) {
+        callback?.(`footWarming PUT failed. Error: ${String(err)}`, err);
+        throw err;
+      }
+    });
   }
 }
