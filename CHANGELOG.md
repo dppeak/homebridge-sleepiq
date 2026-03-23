@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.4 (2026-03-23)
+
+### Bug Fixes
+
+- Fixed write operations (outlet on/off, sleep number, foot warmer, foundation position) silently failing when the session expires — they now automatically re-authenticate and retry instead of dropping the HomeKit action
+- Added concurrency guard so multiple simultaneous 401s (e.g. rapid HomeKit toggles) share a single re-authentication call rather than hammering the login endpoint
+
+---
+
 ## v6.0.3 (2026-03-23)
 
 ### New Features

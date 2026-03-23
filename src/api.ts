@@ -34,6 +34,8 @@ export class SleepIQAPI {
   testing: boolean;
 
   private _cookieStr: string;
+  /** Prevents concurrent re-authentication attempts. */
+  private _reauthPromise: Promise<string> | null = null;
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -47,7 +49,7 @@ export class SleepIQAPI {
     this._cookieStr = '';
   }
 
-  // ─── Internal Helpers ───────────────────────────────────────────────────────
+  // --- Internal Helpers --------------------------------------------------------
 
   private _buildURL(path: string, params: Record<string, string | number> = {}): string {
     const url = new URL(`${BASE_URL}/${path}`);
@@ -86,12 +88,37 @@ export class SleepIQAPI {
   }
 
   /**
+   * Re-authenticate, deduplicating concurrent calls.
+   * If multiple requests fail with 401 simultaneously (e.g. onSet handlers
+   * firing in quick succession), they all await the same single login call
+   * rather than hammering the auth endpoint.
+   */
+  private async _reauth(): Promise<void> {
+    if (!this._reauthPromise) {
+      this._reauthPromise = this._request('PUT', 'login', {
+        body: { login: this.username, password: this.password },
+        allowRetry: false,
+      }).then(data => {
+        const parsed = JSON.parse(data) as Record<string, unknown>;
+        this.userID = parsed.userID as string;
+        this.key = parsed.key as string;
+        return data;
+      }).finally(() => {
+        this._reauthPromise = null;
+      });
+    }
+    await this._reauthPromise;
+  }
+
+  /**
    * Core HTTP helper.
    *
-   * Returns the raw response text on success, or throws a JSON-stringified
-   * error object `{ statusCode, body }` on failure — matching the shape that
-   * the original request-promise-native errors had so existing catch blocks
-   * in platform.ts continue to work unchanged.
+   * On a 401 response, automatically re-authenticates and retries the request
+   * once. This covers all API calls including write operations fired from
+   * HomeKit onSet handlers, which have no other session recovery path.
+   *
+   * Throws a JSON-stringified { statusCode, body } object on unrecoverable
+   * failure so existing catch blocks in platform.ts continue to work unchanged.
    */
   private async _request(
     method: string,
@@ -99,12 +126,15 @@ export class SleepIQAPI {
     options: {
       params?: Record<string, string | number>;
       body?: Record<string, unknown>;
+      allowRetry?: boolean;
     } = {},
   ): Promise<string> {
-    const url = this._buildURL(path, options.params ?? {});
+    const { allowRetry = true, ...rest } = options;
+
+    const url = this._buildURL(path, rest.params ?? {});
     const init: RequestInit = { method, headers: this._headers() };
-    if (options.body !== undefined) {
-      init.body = JSON.stringify(options.body);
+    if (rest.body !== undefined) {
+      init.body = JSON.stringify(rest.body);
     }
 
     let response: Response;
@@ -118,18 +148,24 @@ export class SleepIQAPI {
     const text = await response.text();
 
     if (!response.ok) {
+      // On 401, re-authenticate and retry the original request once.
+      if (response.status === 401 && allowRetry) {
+        await this._reauth();
+        return this._request(method, path, { ...rest, allowRetry: false });
+      }
       throw JSON.stringify({ statusCode: response.status, body: text });
     }
 
     return text;
   }
 
-  // ─── Authentication ─────────────────────────────────────────────────────────
+  // --- Authentication ----------------------------------------------------------
 
   async login(callback?: ApiCallback): Promise<string> {
     try {
       const data = await this._request('PUT', 'login', {
         body: { login: this.username, password: this.password },
+        allowRetry: false, // never retry a login call itself
       });
       const parsed = JSON.parse(data) as Record<string, unknown>;
       this.json = parsed;
@@ -143,7 +179,7 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Bed Status ─────────────────────────────────────────────────────────────
+  // --- Bed Status --------------------------------------------------------------
 
   async familyStatus(callback?: ApiCallback): Promise<string> {
     try {
@@ -191,7 +227,7 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Sleep Number ───────────────────────────────────────────────────────────
+  // --- Sleep Number ------------------------------------------------------------
 
   /** @param side 'L' or 'R' */
   async sleepNumber(side: string, num: number, callback?: ApiCallback): Promise<string> {
@@ -209,7 +245,7 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Pump ───────────────────────────────────────────────────────────────────
+  // --- Pump --------------------------------------------------------------------
 
   async forceIdle(callback?: ApiCallback): Promise<string> {
     try {
@@ -225,7 +261,7 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Foundation ─────────────────────────────────────────────────────────────
+  // --- Foundation --------------------------------------------------------------
 
   async preset(side: string, num: number, callback?: ApiCallback): Promise<string> {
     try {
@@ -246,7 +282,7 @@ export class SleepIQAPI {
    * Adjust a foundation actuator position.
    * @param side     'L' or 'R'
    * @param actuator 'H' (head) or 'F' (foot)
-   * @param num      Position value 0–100
+   * @param num      Position value 0-100
    */
   async adjust(side: string, actuator: string, num: number, callback?: ApiCallback): Promise<string> {
     try {
@@ -264,7 +300,6 @@ export class SleepIQAPI {
   }
 
   async foundationStatus(callback?: ApiCallback): Promise<string> {
-    // Testing fixture
     if (this.testing) {
       const fixture: FoundationStatusResponse = {
         fsCurrentPositionPresetRight: 'Not at preset',
@@ -312,11 +347,11 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Outlets & Lightstrips ──────────────────────────────────────────────────
+  // --- Outlets & Lightstrips ---------------------------------------------------
 
   /**
    * Get the status of a foundation outlet or lightstrip.
-   * @param num 1–4 (1–2 = power outlets, 3–4 = lightstrips)
+   * @param num 1-4 (1-2 = power outlets, 3-4 = lightstrips)
    */
   async outletStatus(num: string | number, callback?: ApiCallback): Promise<string> {
     if (this.testing) {
@@ -342,7 +377,7 @@ export class SleepIQAPI {
 
   /**
    * Set an outlet or lightstrip on/off.
-   * @param num     1–4
+   * @param num     1-4
    * @param setting 0 = off, 1 = on
    */
   async outlet(num: number, setting: number, callback?: ApiCallback): Promise<string> {
@@ -368,7 +403,7 @@ export class SleepIQAPI {
     }
   }
 
-  // ─── Foot Warming ───────────────────────────────────────────────────────────
+  // --- Foot Warming ------------------------------------------------------------
 
   async footWarmingStatus(callback?: ApiCallback): Promise<string> {
     if (this.testing) {
