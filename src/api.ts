@@ -5,11 +5,12 @@
  * (available since Node 18) and manually persists session cookies between
  * requests, replicating request-promise-native's `jar: true` behaviour.
  *
- * The _k session key is injected automatically by _request() at the moment
+ * The _k session key is injected automatically by _buildURL() at the moment
  * each request (or retry) is built, so re-authentication always uses the
  * fresh key rather than a stale value captured at call time.
  */
 
+import type { Logging } from 'homebridge';
 import {
   ApiCallback,
   ApiResponseJSON,
@@ -37,6 +38,8 @@ export class SleepIQAPI {
   private _cookieStr: string;
   /** Prevents concurrent re-authentication attempts. */
   private _reauthPromise: Promise<void> | null = null;
+  /** Homebridge logger — set by platform after construction. */
+  private _log: Logging | null = null;
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -50,6 +53,11 @@ export class SleepIQAPI {
     this._cookieStr = '';
   }
 
+  /** Attach the Homebridge logger so auth events appear in logs at info level. */
+  setLogger(log: Logging): void {
+    this._log = log;
+  }
+
   // --- Internal Helpers --------------------------------------------------------
 
   private _buildURL(
@@ -58,8 +66,8 @@ export class SleepIQAPI {
     injectKey = true,
   ): string {
     const url = new URL(`${BASE_URL}/${path}`);
-    // Always inject the current session key so retries after reauth use the
-    // fresh value rather than whatever was captured at call time.
+    // Inject the current session key at build time so retries after reauth
+    // always use the fresh value rather than a stale capture.
     if (injectKey && this.key) {
       url.searchParams.set('_k', this.key);
     }
@@ -105,6 +113,7 @@ export class SleepIQAPI {
    */
   private async _reauth(): Promise<void> {
     if (!this._reauthPromise) {
+      this._log?.info('SleepIQ session expired — re-authenticating...');
       this._reauthPromise = this._request('PUT', 'login', {
         body: { login: this.username, password: this.password },
         injectKey: false,
@@ -113,6 +122,10 @@ export class SleepIQAPI {
         const parsed = JSON.parse(data) as Record<string, unknown>;
         this.userID = parsed.userID as string;
         this.key = parsed.key as string;
+        this._log?.info(`SleepIQ re-authentication successful (key: ...${this.key.slice(-6)}).`);
+      }).catch(err => {
+        this._log?.error('SleepIQ re-authentication failed:', String(err));
+        throw err;
       }).finally(() => {
         this._reauthPromise = null;
       });
@@ -143,8 +156,6 @@ export class SleepIQAPI {
   ): Promise<string> {
     const { allowRetry = true, injectKey = true, params, body } = options;
 
-    // _buildURL reads this.key at call time — after _reauth() the retry will
-    // read the updated key automatically.
     const url = this._buildURL(path, params ?? {}, injectKey);
     const init: RequestInit = { method, headers: this._headers() };
     if (body !== undefined) {
@@ -163,9 +174,10 @@ export class SleepIQAPI {
 
     if (!response.ok) {
       if (response.status === 401 && allowRetry) {
-        // Re-authenticate then rebuild the request — _buildURL will inject
-        // the new this.key into the URL on the retry.
+        // Re-authenticate then rebuild the URL — _buildURL will inject the
+        // new this.key into the URL on the retry.
         await this._reauth();
+        this._log?.info(`Retrying ${method} ${path} with fresh session...`);
         return this._request(method, path, { params, body, injectKey, allowRetry: false });
       }
       throw JSON.stringify({ statusCode: response.status, body: text });
@@ -180,7 +192,7 @@ export class SleepIQAPI {
     try {
       const data = await this._request('PUT', 'login', {
         body: { login: this.username, password: this.password },
-        injectKey: false,  // login doesn't use _k
+        injectKey: false,  // login endpoint does not use _k
         allowRetry: false, // never retry a login call itself
       });
       const parsed = JSON.parse(data) as Record<string, unknown>;

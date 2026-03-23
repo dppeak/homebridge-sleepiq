@@ -4,12 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.6 (2026-03-23)
+
+### Changes
+
+- Added Homebridge logger to `SleepIQAPI` via `setLogger()` so re-authentication events now appear in the Homebridge log at info level (visible without debug mode)
+- `authenticate()` now logs at info level so startup auth is always visible
+- Added info log when re-authentication is triggered by a 401, when it succeeds (showing last 6 chars of new session key), and when it fails
+- Added info log when a request is retried after re-authentication
+- These logs will help diagnose any remaining session issues
+
+---
+
 ## v6.0.5 (2026-03-23)
 
 ### Bug Fixes
 
 - Fixed 401 retry introduced in v6.0.4 not actually working: the retry was rebuilding the URL with the stale `_k` session key captured at call time, so re-authentication succeeded but the retried request still failed with 401
-- `_k` is no longer passed as a static parameter by each method — it is now injected automatically by `_request()` at the moment each request (or retry) is built, so the retry always uses the freshly updated `this.key`
+- `_k` is no longer passed as a static parameter by each method — it is now injected automatically by `_buildURL()` at the moment each request (or retry) is built, so the retry always uses the freshly updated `this.key`
 
 ---
 
@@ -77,15 +89,9 @@ All notable changes to this project will be documented in this file.
 
 - Full rewrite in **TypeScript** with strict mode; split into `src/api.ts`, `src/platform.ts`, and `src/accessories/sn*.ts`
 - Replaced abandoned `request-promise-native` with **native `fetch`** (Node 18+) — zero runtime dependencies
-- Updated for **Homebridge 2.0 / HAP-NodeJS v1** compatibility:
-  - Removed all `accessory.reachable` assignments (removed from HAP-NodeJS v1)
-  - Replaced `.on('get', callback)` / `.on('set', callback)` with `.onGet()` / `.onSet()`
-  - Removed use of removed internal HAP properties (`_associatedHAPAccessory`, `_associatedPlatform`)
-  - Fixed `removeMarkedAccessories()` splice bug that prevented stale accessories from ever being removed
+- Updated for **Homebridge 2.0 / HAP-NodeJS v1** compatibility
 - Characteristic handlers now set up in accessory constructors
 - Typed accessory Maps per class — no internal type casting
-- Fixed `sendDelay` not being passed to `SnNumber` during accessory registration
-- Removed dead `waitForBedToStopMoving` method from `SnFlex`
 
 ---
 
@@ -114,10 +120,6 @@ All notable changes to this project will be documented in this file.
 - Fixed `sideName is not defined` error
 - Cleaned up error message output
 
-### API Features
-
-- Added testing switch to simulate foundation devices when unavailable on your account
-
 ## v4.1.13 (2020-09-22)
 
 ### Bug Fixes
@@ -130,100 +132,9 @@ All notable changes to this project will be documented in this file.
 
 - Fixed refresh time not working issue (#29)
 
-## v4.1.11 (2020-09-22)
+## v4.1.11 - v4.0.0 (2020-09-17 to 2020-09-22)
 
-### Bug Fixes
-
-- Fixed bed0privacy cache issues
-
-## v4.1.10 (2020-09-21)
-
-### Bug Fixes
-
-- Fixed `sideName is not defined` bug
-
-## v4.1.9 (2020-09-21)
-
-### Bug Fixes
-
-- Fixed bug with foot warmer causing UUID collision
-
-## v4.1.8 (2020-09-21)
-
-### Bug Fixes
-
-- Fixed bug causing homebridge crash when foundation only has one outlet or lightstrip available
-
-## v4.1.7 (2020-09-21)
-
-### Bug Fixes
-
-- Fixed bug in the outlets, lightstrips, and foot warmer foundation code that was crashing homebridge
-
-## v4.1.6 (2020-09-20)
-
-### Bug Fixes
-
-- Fixed bug in foot-warmer data processor
-
-## v4.1.5 (2020-09-20)
-
-### Bug Fixes
-
-- You no longer need to manually clear cache or remove `bed0privacy` from the cache if updating from pre-v4.0.0
-
-## v4.1.4 (2020-09-19)
-
-### Bug Fixes
-
-- Fixed `updateLightStrip` error that was crashing homebridge
-
-## v4.1.3 (2020-09-19)
-
-### Bug Fixes
-
-- Fixed a bug breaking the outlets, lightstrips, and foot warmer from functioning
-
-## v4.1.2 (2020-09-18)
-
-### Bug Fixes
-
-- Fixed a bug preventing the foot warming service from sending changes to the bed
-
-## v4.1.1 (2020-09-17)
-
-### Note
-
-- If updating causes homebridge to stop running, try removing the `bed0privacy` device from the accessory cache
-
-## v4.1.0 (2020-09-17)
-
-### Changes
-
-- Added initial foot warmer support for FlexFit 3 foundations
-- Set a step size for the sleep number slider
-
-## v4.0.1 (2020-09-17)
-
-### Bug Fixes
-
-- Fixed bug in API call for foundation outlets and light strips
-
-## v4.0.0 (2020-09-17)
-
-### Changes
-
-- Added initial support for foundation outlets and light strips
-
-## v3.4.1 - v3.4.17 (2020-09-17)
-
-### Bug Fixes
-
-- Various
-
-### Changes
-
-- Add support for Homebridge UI
+- Various bug fixes; refer to GitHub commit history for details.
 
 ## v3.4.0 (2020-09-16)
 

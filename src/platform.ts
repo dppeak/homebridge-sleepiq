@@ -119,6 +119,9 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     }
 
     this.snapi = new SleepIQAPI(cfg.email, cfg.password);
+    // Give the API class the logger so reauth events appear at info level
+    this.snapi.setLogger(this.log);
+
     this.refreshTime = (cfg.refreshTime ?? 5) * 1000;
     this.sendDelay = (cfg.sendDelay ?? 2) * 1000;
     this.warmingTimer = cfg.warmingTimer ?? '6h';
@@ -202,9 +205,9 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
   private async authenticate(): Promise<void> {
     try {
-      this.log.debug('SleepIQ authenticating...');
+      this.log.info('SleepIQ authenticating...');
       await this.snapi.login();
-      this.log.debug('SleepIQ authenticated successfully.');
+      this.log.info('SleepIQ authenticated successfully.');
     } catch (err) {
       this.log.error('Failed to authenticate with SleepIQ -- check your email and password.', err);
     }
@@ -421,7 +424,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   }
 
   private async parseBed(bedID: string, bed: FamilyStatusResponse['beds'][0]): Promise<void> {
-    // If privacy is enabled, ensure we have the accessory registered
     if (this.enablePrivacySwitch) {
       const privacyKey = `${bedID}privacy`;
       if (!this.privacyAccessories.has(privacyKey)) {
@@ -447,7 +449,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
     this.snapi.bedID = bedID;
 
-    // Foundation position data
     let foundationData: FoundationStatusResponse | undefined;
     if (this.hasFoundation && this.enableFoundationControls) {
       try {
@@ -460,7 +461,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // Foot warmer data
     let footWarmerData: FootWarmingStatusResponse | undefined;
     if (this.hasWarmers && this.enableFootWarmers) {
       try {
@@ -473,7 +473,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // Per-side updates
     const sides = this.extractSides(bed);
     let anySideOccupied = false;
     let bothSidesOccupied = true;
@@ -481,7 +480,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     for (const [bedside, sideData] of Object.entries(sides)) {
       const sideID = `${bedID}${bedside}`;
 
-      // Occupancy
       if (this.enableOccupancySensors) {
         if (!this.occupancyAccessories.has(`${sideID}occupancy`)) {
           this.log.info('New bed side detected. Re-running accessory registration.');
@@ -495,14 +493,12 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         bothSidesOccupied = bothSidesOccupied && occupied;
       }
 
-      // Sleep number
       if (this.enableSleepNumberControls) {
         this.log.debug(`Sleep number: ${bedside} = ${sideData.sleepNumber}`);
         this.numberAccessories.get(`${sideID}number`)?.updateSleepNumber(sideData.sleepNumber);
       }
 
       if (this.hasFoundation) {
-        // Foundation flex positions
         if (this.enableFoundationControls && foundationData) {
           if (bedside === 'leftSide') {
             this.flexAccessories.get(`${sideID}flex`)?.updateFoundation(
@@ -517,7 +513,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           }
         }
 
-        // Outlets
         if (this.enableOutlets) {
           const hasOutlet = (bedside === 'rightSide' && this.hasOutletRight) ||
                             (bedside === 'leftSide' && this.hasOutletLeft);
@@ -537,7 +532,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           }
         }
 
-        // Lightstrips
         if (this.enableLightstrips) {
           const hasStrip = (bedside === 'rightSide' && this.hasLightstripRight) ||
                            (bedside === 'leftSide' && this.hasLightstripLeft);
@@ -557,7 +551,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           }
         }
 
-        // Foot warmers
         if (this.enableFootWarmers && this.hasWarmers && footWarmerData) {
           const rawTemp = bedside === 'leftSide'
             ? footWarmerData.footWarmingStatusLeft
@@ -567,7 +560,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // Virtual occupancy sensors
     if (this.enableOccupancySensors) {
       this.occupancyAccessories.get(`${bedID}anySideoccupancy`)?.setOccupancyDetected(anySideOccupied);
       this.occupancyAccessories.get(`${bedID}bothSidesoccupancy`)?.setOccupancyDetected(bothSidesOccupied);
@@ -621,11 +613,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
   // --- Helpers -----------------------------------------------------------------
 
-  /**
-   * Returns true if an accessory type is disabled by the current config.
-   * Used in configureAccessory() to evict cached accessories when a feature
-   * is turned off so they are cleanly removed from HomeKit on restart.
-   */
   private isDisabledByConfig(type: SleepIQAccessoryType | undefined): boolean {
     switch (type) {
       case 'occupancy':  return !this.enableOccupancySensors;
