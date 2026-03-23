@@ -32,7 +32,7 @@
                 "type": "integer",
                 "required": false,
                 "placeholder": 5,
-                "description": "How often to poll SleepIQ for updates. Increase to reduce API requests. There is little benefit setting this below 5 seconds as the SleepIQ API does not update faster than that.",
+                "description": "How often to poll SleepIQ for updates. There is little benefit setting this below 5 seconds.",
                 "minimum": 5,
                 "maximum": 3600
             },
@@ -41,7 +41,7 @@
                 "type": "integer",
                 "required": false,
                 "placeholder": 2,
-                "description": "Debounce delay before sending a new sleep number to the bed after adjusting the slider in HomeKit. Increase if the bed receives too many rapid requests while dragging.",
+                "description": "Debounce delay before sending a new sleep number to the bed after adjusting the slider in HomeKit.",
                 "minimum": 0,
                 "maximum": 30
             },
@@ -59,7 +59,49 @@
                     { "title": "5 hours",    "enum": ["5h"]  },
                     { "title": "6 hours",    "enum": ["6h"]  }
                 ],
-                "description": "How long the foot warmer runs when turned on. Recommended: leave at 6 hours and use HomeKit automations to turn it off earlier if needed."
+                "description": "How long the foot warmer runs when turned on. Only used when foot warmers are enabled."
+            },
+            "enableOccupancySensors": {
+                "title": "Enable Occupancy Sensors",
+                "type": "boolean",
+                "default": true,
+                "description": "Create occupancy sensors for each bed side, plus virtual anySide and bothSides sensors."
+            },
+            "enableSleepNumberControls": {
+                "title": "Enable Sleep Number Controls",
+                "type": "boolean",
+                "default": true,
+                "description": "Create a dimmer-style control for each side to adjust the sleep number (firmness)."
+            },
+            "enablePrivacySwitch": {
+                "title": "Enable Privacy Switch",
+                "type": "boolean",
+                "default": true,
+                "description": "Create a switch to toggle the bed's privacy/pause mode (stops data transmission to Sleep Number)."
+            },
+            "enableFoundationControls": {
+                "title": "Enable Foundation Controls",
+                "type": "boolean",
+                "default": true,
+                "description": "Create head and foot position controls for each side of a FlexFit foundation."
+            },
+            "enableOutlets": {
+                "title": "Enable Foundation Outlets",
+                "type": "boolean",
+                "default": true,
+                "description": "Create outlet switches for compatible FlexFit foundations."
+            },
+            "enableLightstrips": {
+                "title": "Enable Foundation Lightstrips",
+                "type": "boolean",
+                "default": true,
+                "description": "Create under-bed lightstrip controls for compatible FlexFit foundations."
+            },
+            "enableFootWarmers": {
+                "title": "Enable Foot Warmers",
+                "type": "boolean",
+                "default": true,
+                "description": "Create foot warmer controls for FlexFit 3 foundations."
             }
         }
     }
