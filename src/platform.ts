@@ -51,6 +51,13 @@ interface SleepIQConfig extends PlatformConfig {
   enableFootWarmers?: boolean;
 }
 
+/**
+ * How often to proactively refresh the SleepIQ session.
+ * The Sleep Number API issues sessions with a ~60 second TTL. Refreshing
+ * at 45 seconds keeps the session alive without reactive 401 retries.
+ */
+const SESSION_REFRESH_MS = 45_000;
+
 // --- Platform ------------------------------------------------------------------
 
 export class SleepIQPlatform implements DynamicPlatformPlugin {
@@ -61,7 +68,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   private readonly sendDelay: number;
   private readonly warmingTimer: string;
 
-  // Feature toggles — all default to enabled.
   private readonly enableOccupancySensors: boolean;
   private readonly enableSleepNumberControls: boolean;
   private readonly enablePrivacySwitch: boolean;
@@ -70,7 +76,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   private readonly enableLightstrips: boolean;
   private readonly enableFootWarmers: boolean;
 
-  // Typed accessory maps — keys are always `<bedID><bedSide?><type>`.
   private readonly occupancyAccessories = new Map<string, SnOccupancy>();
   private readonly numberAccessories = new Map<string, SnNumber>();
   private readonly flexAccessories = new Map<string, SnFlex>();
@@ -79,10 +84,8 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   private readonly lightStripAccessories = new Map<string, SnLightStrip>();
   private readonly footWarmerAccessories = new Map<string, SnFootWarmer>();
 
-  /** Accessories loaded from cache that are no longer needed. */
   private readonly staleAccessories: PlatformAccessory<SleepIQContext>[] = [];
 
-  // Hardware capability flags, detected once at startup.
   private hasFoundation = false;
   private hasOutletLeft = false;
   private hasOutletRight = false;
@@ -193,16 +196,17 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       return;
     }
     await this.addAccessories();
+    // Proactively refresh the session every SESSION_REFRESH_MS (45s) so
+    // polls and HomeKit actions never hit a 401 in the first place.
+    // The reactive reauth in api.ts is kept as a safety net for edge cases.
+    setInterval(() => {
+      this.snapi.proactiveReauth().catch(err =>
+        this.log.debug('Proactive reauth error (non-fatal):', err),
+      );
+    }, SESSION_REFRESH_MS);
     setInterval(() => this.fetchData(), this.refreshTime);
   }
 
-  /**
-   * Initial login only. Called once at startup.
-   * Session recovery during polling is handled entirely by SleepIQAPI._request()
-   * via its automatic reauth+retry on 401. The platform never calls this again
-   * after startup — doing so would race with the API-level reauth and invalidate
-   * the fresh session key before the retry can use it.
-   */
   private async authenticate(): Promise<void> {
     try {
       this.log.info('SleepIQ authenticating...');
@@ -371,14 +375,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
   // --- Polling -----------------------------------------------------------------
 
-  /**
-   * Session recovery is handled entirely by SleepIQAPI._request() which
-   * automatically re-authenticates and retries on 401. The platform never
-   * calls authenticate() here — doing so would race with the API-level reauth
-   * and invalidate the fresh session key before the retry could use it.
-   * Any errors that survive the API-layer retry are logged and the poll cycle
-   * is skipped; the next interval will recover automatically.
-   */
   private async fetchData(): Promise<void> {
     this.log.debug('Polling SleepIQ...');
 
@@ -391,8 +387,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
     const status = this.snapi.json as FamilyStatusResponse;
 
-    // A 200 response whose body contains an Error field is a SleepIQ-level
-    // error, not a session issue (those are handled at the HTTP layer).
     if ('Error' in status) {
       const code = (status as unknown as { Error: ApiError }).Error.Code;
       this.log.error('SleepIQ returned body-level error during poll. Code:', code);

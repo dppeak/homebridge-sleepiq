@@ -4,14 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.1.0 (2026-03-23)
+
+### Bug Fixes
+
+- **Dramatically reduced login frequency.** The Sleep Number API issues sessions with a ~60 second TTL. Previous versions reactively re-authenticated on every poll cycle (once per minute), causing 60+ logins per hour which risked IP rate-limiting by Sleep Number's servers.
+- Added a **proactive session refresh timer** that re-authenticates every 45 seconds, before the session expires. Polls and HomeKit actions now run against a always-fresh session and never encounter a 401 in normal operation.
+- Reduced `MAX_AUTH_RETRIES` from 2 back to 1 — reactive retries are now a safety net for edge cases only, not the primary session recovery path.
+- Increased retry delay from 500ms to 1000ms for better resilience on the rare occasions a reactive retry is needed.
+
+---
+
 ## v6.0.9 (2026-03-23)
 
 ### Bug Fixes
 
-- **Fixed intermittent 401 errors where a retry immediately after re-authentication still failed.** The Sleep Number API appears to have a brief propagation delay between when a new session key is issued and when it becomes usable. The first retry was arriving before the session was fully active on their servers.
-- Added a 500ms delay between re-authentication and the retry to allow the session to become active
-- Increased maximum retry attempts from 1 to 2, so if the first retry still catches a transitional 401 the client re-authenticates and tries once more
-- Retry log now includes the attempt number (e.g. `attempt 1/2`) for easier diagnosis
+- Added 500ms delay between re-authentication and retry for session propagation
+- Increased maximum retry attempts to 2
 
 ---
 
@@ -19,7 +28,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed intermittent 401 failures when polling and a HomeKit write fired simultaneously. All API requests are now serialized through a single promise queue so only one HTTP request is in-flight at a time
+- Serialized all API requests through a single queue to prevent concurrent reauth races
 
 ---
 
@@ -27,7 +36,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed race condition where `platform.ts` called `authenticate()` concurrently with the API layer's own reauth, causing one to invalidate the other's fresh session key. Session recovery is now handled exclusively by the API layer
+- Removed platform-level session recovery that was racing with API-layer reauth
 
 ---
 
@@ -35,7 +44,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changes
 
-- Added Homebridge logger to `SleepIQAPI` for visible reauth diagnostics at info level
+- Added Homebridge logger to SleepIQAPI for visible reauth diagnostics
 
 ---
 
@@ -43,7 +52,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed 401 retry rebuilding the URL with a stale `_k` session key captured at call time
+- Fixed 401 retry using stale `_k` session key
 
 ---
 
@@ -51,7 +60,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed write operations silently failing when the session expires
+- Fixed write operations silently failing on session expiry
 
 ---
 
@@ -59,7 +68,7 @@ All notable changes to this project will be documented in this file.
 
 ### New Features
 
-- Per-feature enable/disable toggles in the Homebridge UI config form
+- Per-feature enable/disable toggles in Homebridge UI config form
 
 ---
 

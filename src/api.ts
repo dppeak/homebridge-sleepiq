@@ -1,16 +1,13 @@
 /**
  * SleepIQ REST API client.
  *
- * Communicates with the Sleep Number cloud API. Uses Node.js native fetch
- * (available since Node 18) and manually persists session cookies between
- * requests, replicating request-promise-native's `jar: true` behaviour.
- *
- * All public API methods are serialized through a single promise queue so
- * only one request is in-flight at a time.
- *
- * On a 401 response, the client re-authenticates, waits briefly for the
- * new session to become active on Sleep Number's servers, then retries.
- * Up to MAX_AUTH_RETRIES attempts are made before giving up.
+ * Session management strategy:
+ * - The platform calls proactiveReauth() on a timer every SESSION_REFRESH_MS
+ *   to keep the session fresh before it expires (~60s TTL observed).
+ * - On a 401 (fallback for edge cases), _rawRequest re-authenticates once
+ *   and retries. This should rarely trigger with proactive auth in place.
+ * - All public methods are serialized through a single promise queue so only
+ *   one HTTP request is in-flight at a time.
  */
 
 import type { Logging } from 'homebridge';
@@ -25,15 +22,11 @@ import {
 
 const BASE_URL = 'https://api.sleepiq.sleepnumber.com/rest';
 
-/**
- * How many times to retry a request after a 401 / reauth.
- * Sleep Number sessions can take a moment to become active on their servers
- * after login, so a second attempt (with a delay) adds meaningful resilience.
- */
-const MAX_AUTH_RETRIES = 2;
+/** Fallback retry attempts on 401. Kept at 1 since proactive auth is primary. */
+const MAX_AUTH_RETRIES = 1;
 
-/** Milliseconds to wait after reauth before retrying the original request. */
-const REAUTH_RETRY_DELAY_MS = 500;
+/** Milliseconds to wait after reauth before retrying (session propagation delay). */
+const REAUTH_RETRY_DELAY_MS = 1000;
 
 export class SleepIQAPI {
   username: string;
@@ -49,7 +42,6 @@ export class SleepIQAPI {
   testing: boolean;
 
   private _cookieStr: string;
-  /** Homebridge logger — set by platform after construction. */
   private _log: Logging | null = null;
   /** Serial request queue — only one HTTP job runs at a time. */
   private _queue: Promise<void> = Promise.resolve();
@@ -66,7 +58,6 @@ export class SleepIQAPI {
     this._cookieStr = '';
   }
 
-  /** Attach the Homebridge logger so auth events appear in logs at info level. */
   setLogger(log: Logging): void {
     this._log = log;
   }
@@ -115,28 +106,20 @@ export class SleepIQAPI {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Enqueue a job so it runs only after all previously enqueued jobs finish.
-   * Errors propagate to the caller but do not stall the queue.
-   */
   private _enqueue<T>(job: () => Promise<T>): Promise<T> {
     const result = this._queue.then(job, job);
     this._queue = result.then(() => undefined, () => undefined);
     return result;
   }
 
-  /**
-   * Re-authenticate. Always called from within an already-queued job so the
-   * queue is not re-entered — no other request can start until the current
-   * job (including this reauth and the subsequent retry) finishes.
-   */
+  /** Re-authenticate in-place. Must be called from within a queued job. */
   private async _reauth(): Promise<void> {
     this._log?.info('SleepIQ session expired — re-authenticating...');
     try {
       const data = await this._rawRequest('PUT', 'login', {
         body: { login: this.username, password: this.password },
         injectKey: false,
-        retriesLeft: 0, // never retry a login call
+        retriesLeft: 0,
       });
       const parsed = JSON.parse(data) as Record<string, unknown>;
       this.userID = parsed.userID as string;
@@ -149,16 +132,32 @@ export class SleepIQAPI {
   }
 
   /**
-   * Raw HTTP helper — executes immediately, no queuing.
-   * Must only be called from within an already-queued job.
-   *
-   * On 401:
-   *   1. Re-authenticates to get a fresh session key and cookie.
-   *   2. Waits REAUTH_RETRY_DELAY_MS for the new session to become active
-   *      on Sleep Number's servers (sessions are not always immediately
-   *      usable right after the login response arrives).
-   *   3. Retries the original request.
-   *   4. Repeats up to retriesLeft times before giving up.
+   * Proactive session refresh — called by platform on a timer.
+   * Enqueued like any other request so it doesn't interrupt in-flight calls.
+   */
+  async proactiveReauth(): Promise<void> {
+    return this._enqueue(async () => {
+      try {
+        const data = await this._rawRequest('PUT', 'login', {
+          body: { login: this.username, password: this.password },
+          injectKey: false,
+          retriesLeft: 0,
+        });
+        const parsed = JSON.parse(data) as Record<string, unknown>;
+        this.userID = parsed.userID as string;
+        this.key = parsed.key as string;
+        this._log?.debug(`SleepIQ session refreshed proactively (key: ...${this.key.slice(-6)}).`);
+      } catch (err) {
+        this._log?.warn('SleepIQ proactive session refresh failed — will retry on next cycle:', String(err));
+        // Do not throw — a failed proactive refresh is non-fatal; the reactive
+        // reauth in _rawRequest will catch any 401s that result.
+      }
+    });
+  }
+
+  /**
+   * Raw HTTP helper — no queuing. Must be called from within a queued job.
+   * On 401, re-authenticates and retries up to retriesLeft times.
    */
   private async _rawRequest(
     method: string,
@@ -191,9 +190,6 @@ export class SleepIQAPI {
     if (!response.ok) {
       if (response.status === 401 && retriesLeft > 0) {
         await this._reauth();
-        // Brief pause so Sleep Number's session backend has time to activate
-        // the new key before we use it. Without this, the retry can arrive
-        // before the session is fully valid and get another 401.
         await this._delay(REAUTH_RETRY_DELAY_MS);
         const attempt = MAX_AUTH_RETRIES - retriesLeft + 1;
         this._log?.info(`Retrying ${method} ${path} (attempt ${attempt}/${MAX_AUTH_RETRIES})...`);
