@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.5 (2026-03-23)
+
+### Bug Fixes
+
+- Fixed 401 retry introduced in v6.0.4 not actually working: the retry was rebuilding the URL with the stale `_k` session key captured at call time, so re-authentication succeeded but the retried request still failed with 401
+- `_k` is no longer passed as a static parameter by each method — it is now injected automatically by `_request()` at the moment each request (or retry) is built, so the retry always uses the freshly updated `this.key`
+
+---
+
 ## v6.0.4 (2026-03-23)
 
 ### Bug Fixes
