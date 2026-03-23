@@ -1,7 +1,7 @@
 {
   "name": "@dppeak/homebridge-sleepiq",
   "displayName": "Homebridge SleepIQ",
-  "version": "6.0.8",
+  "version": "6.0.9",
   "description": "Sleep Number SleepIQ plugin for Homebridge",
   "license": "ISC",
   "main": "dist/index.js",

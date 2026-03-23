@@ -6,13 +6,11 @@
  * requests, replicating request-promise-native's `jar: true` behaviour.
  *
  * All public API methods are serialized through a single promise queue so
- * only one request is in-flight at a time. This prevents a concurrent poll
- * and a HomeKit onSet from both triggering reauth simultaneously, which
- * would cause one of them to retry with a key already invalidated by the
- * other's login call.
+ * only one request is in-flight at a time.
  *
- * The _k session key is injected automatically by _buildURL() at the moment
- * each request (or retry) is built, so retries always use the fresh key.
+ * On a 401 response, the client re-authenticates, waits briefly for the
+ * new session to become active on Sleep Number's servers, then retries.
+ * Up to MAX_AUTH_RETRIES attempts are made before giving up.
  */
 
 import type { Logging } from 'homebridge';
@@ -26,6 +24,16 @@ import {
 } from './types';
 
 const BASE_URL = 'https://api.sleepiq.sleepnumber.com/rest';
+
+/**
+ * How many times to retry a request after a 401 / reauth.
+ * Sleep Number sessions can take a moment to become active on their servers
+ * after login, so a second attempt (with a delay) adds meaningful resilience.
+ */
+const MAX_AUTH_RETRIES = 2;
+
+/** Milliseconds to wait after reauth before retrying the original request. */
+const REAUTH_RETRY_DELAY_MS = 500;
 
 export class SleepIQAPI {
   username: string;
@@ -43,14 +51,7 @@ export class SleepIQAPI {
   private _cookieStr: string;
   /** Homebridge logger — set by platform after construction. */
   private _log: Logging | null = null;
-  /**
-   * Serial request queue. Every public API call is enqueued here so that
-   * only one HTTP request (including its reauth+retry if needed) is
-   * in-flight at a time. This prevents concurrent requests from both
-   * triggering _reauth(), getting the same new key, then racing to use it
-   * — which causes one to arrive at the API while the other's retry is
-   * mid-flight, confusing the Sleep Number session state.
-   */
+  /** Serial request queue — only one HTTP job runs at a time. */
   private _queue: Promise<void> = Promise.resolve();
 
   constructor(username: string, password: string) {
@@ -110,25 +111,24 @@ export class SleepIQAPI {
     }
   }
 
+  private _delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   /**
    * Enqueue a job so it runs only after all previously enqueued jobs finish.
-   * Errors are swallowed from the queue chain itself (but still propagate to
-   * the caller via the returned promise) so one failure does not stall the queue.
+   * Errors propagate to the caller but do not stall the queue.
    */
   private _enqueue<T>(job: () => Promise<T>): Promise<T> {
     const result = this._queue.then(job, job);
-    // Advance the queue regardless of whether the job succeeds or fails.
-    this._queue = result.then(
-      () => undefined,
-      () => undefined,
-    );
+    this._queue = result.then(() => undefined, () => undefined);
     return result;
   }
 
   /**
-   * Re-authenticate. Called from within an already-queued job, so no
-   * additional serialization is needed here — no other request can start
-   * until the current queued job (including this reauth and its retry) finishes.
+   * Re-authenticate. Always called from within an already-queued job so the
+   * queue is not re-entered — no other request can start until the current
+   * job (including this reauth and the subsequent retry) finishes.
    */
   private async _reauth(): Promise<void> {
     this._log?.info('SleepIQ session expired — re-authenticating...');
@@ -136,7 +136,7 @@ export class SleepIQAPI {
       const data = await this._rawRequest('PUT', 'login', {
         body: { login: this.username, password: this.password },
         injectKey: false,
-        allowRetry: false,
+        retriesLeft: 0, // never retry a login call
       });
       const parsed = JSON.parse(data) as Record<string, unknown>;
       this.userID = parsed.userID as string;
@@ -149,9 +149,16 @@ export class SleepIQAPI {
   }
 
   /**
-   * Raw HTTP helper — executes immediately with no queuing.
-   * Only call this from within an already-queued job (i.e. from _enqueue's
-   * callback, or from _reauth which is itself called from there).
+   * Raw HTTP helper — executes immediately, no queuing.
+   * Must only be called from within an already-queued job.
+   *
+   * On 401:
+   *   1. Re-authenticates to get a fresh session key and cookie.
+   *   2. Waits REAUTH_RETRY_DELAY_MS for the new session to become active
+   *      on Sleep Number's servers (sessions are not always immediately
+   *      usable right after the login response arrives).
+   *   3. Retries the original request.
+   *   4. Repeats up to retriesLeft times before giving up.
    */
   private async _rawRequest(
     method: string,
@@ -160,10 +167,10 @@ export class SleepIQAPI {
       params?: Record<string, string | number>;
       body?: Record<string, unknown>;
       injectKey?: boolean;
-      allowRetry?: boolean;
+      retriesLeft?: number;
     } = {},
   ): Promise<string> {
-    const { allowRetry = true, injectKey = true, params, body } = options;
+    const { retriesLeft = MAX_AUTH_RETRIES, injectKey = true, params, body } = options;
 
     const url = this._buildURL(path, params ?? {}, injectKey);
     const init: RequestInit = { method, headers: this._headers() };
@@ -182,10 +189,15 @@ export class SleepIQAPI {
     const text = await response.text();
 
     if (!response.ok) {
-      if (response.status === 401 && allowRetry) {
+      if (response.status === 401 && retriesLeft > 0) {
         await this._reauth();
-        this._log?.info(`Retrying ${method} ${path} with fresh session...`);
-        return this._rawRequest(method, path, { params, body, injectKey, allowRetry: false });
+        // Brief pause so Sleep Number's session backend has time to activate
+        // the new key before we use it. Without this, the retry can arrive
+        // before the session is fully valid and get another 401.
+        await this._delay(REAUTH_RETRY_DELAY_MS);
+        const attempt = MAX_AUTH_RETRIES - retriesLeft + 1;
+        this._log?.info(`Retrying ${method} ${path} (attempt ${attempt}/${MAX_AUTH_RETRIES})...`);
+        return this._rawRequest(method, path, { params, body, injectKey, retriesLeft: retriesLeft - 1 });
       }
       throw JSON.stringify({ statusCode: response.status, body: text });
     }
@@ -201,7 +213,7 @@ export class SleepIQAPI {
         const data = await this._rawRequest('PUT', 'login', {
           body: { login: this.username, password: this.password },
           injectKey: false,
-          allowRetry: false,
+          retriesLeft: 0,
         });
         const parsed = JSON.parse(data) as Record<string, unknown>;
         this.json = parsed;
