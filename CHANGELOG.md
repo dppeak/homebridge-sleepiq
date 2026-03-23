@@ -2,19 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
-## v5.0.0 (2020-11-14)
+---
 
-In my original readme, I had a statement: 
+## v6.0.0 (2025)
 
-> So far, I have not seen Sleep Number get upset with too many requests, but in theory they could at some point in time if we flood their network.
+> **Community fork** of [DeeeeLAN/homebridge-sleepiq](https://github.com/DeeeeLAN/homebridge-sleepiq) at v4.2.0, maintained by [dppeak](https://github.com/dppeak).
 
-Unfortunately, that day has come. I received a call from Sleep Number requesting I take down this plugin as it is overwhelming their network and making the SleepIQ experience worse for everybody, and it is a direct violation of their User Agreement. This update removes all functionality (you will need to remove the accessories from HomeKit). If you choose not to update, Sleep Number will likely blacklist your IP Address and reach out to you directly as they work through the list of users with massive amounts of API requests. 
+### Breaking Changes
 
-I requested that they keep our small community in mind and give us a proper API with local network access in the future. I don't know if they ever will, but if they call you, please add your request to mine, make our voices heard. 
+- **Node.js >= 18.20.4 required** (previously >= 0.12.0)
+- **Homebridge >= 1.8.0 required** (previously >= 0.2.0)
+- Project is now TypeScript — source lives in `src/`, compiled output in `dist/`
 
-Thanks for all the good times and keep sleeping,
+### Changed
 
-Dillan
+- Full rewrite in **TypeScript** with strict mode; split into `src/api.ts`, `src/platform.ts`, and `src/accessories/sn*.ts`
+- Replaced abandoned `request-promise-native` with **native `fetch`** (Node 18+) — zero runtime dependencies
+- Updated for **Homebridge 2.0 / HAP-NodeJS v1** compatibility:
+  - Removed all `accessory.reachable` assignments (reachability removed from HAP-NodeJS v1)
+  - Replaced `.on('get', callback)` / `.on('set', callback)` with `.onGet()` / `.onSet()`
+  - Removed use of removed internal HAP properties (`_associatedHAPAccessory`, `_associatedPlatform`)
+  - Fixed `removeMarkedAccessories()` splice bug that prevented stale accessories from ever being removed
+- Characteristic handlers now set up in **accessory constructors** (no more `getServices()` pattern)
+- **Typed accessory Maps** per class — no internal type casting
+- Fixed `sendDelay` not being passed to `SnNumber` in `addAccessories()`
+- Removed dead `waitForBedToStopMoving` method from `SnFlex`
+- Added `prepare` npm script so the plugin builds automatically on `npm install`
+- Added `"files": ["dist"]` to `package.json` so published packages only include compiled output
+
+---
 
 ## v4.2.0 (2020-10-16)
 
@@ -39,11 +55,11 @@ Dillan
 ### Bug Fixes
 
 - Fixed `sideName is not defined` error
-- Cleaned up error message output some
+- Cleaned up error message output
 
 ### API Features
 
-- Added testing switch to simulate foundation devices when they are unavailable on your account to assist with development
+- Added testing switch to simulate foundation devices when unavailable on your account
 
 ## v4.1.13 (2020-09-22)
 
@@ -85,20 +101,19 @@ Dillan
 
 ### Bug Fixes
 
-- Fixed bug in the outlets, lightstrips, and foot warmer foundation code that was crashing homebridge.
+- Fixed bug in the outlets, lightstrips, and foot warmer foundation code that was crashing homebridge
 
 ## v4.1.6 (2020-09-20)
 
 ### Bug Fixes
 
-- Fixed bug in foot-warmer data processor. 
+- Fixed bug in foot-warmer data processor
 
 ## v4.1.5 (2020-09-20)
 
 ### Bug Fixes
 
-- You no longer need to manually clear cache or remove `bed0privacy` from the cache if you are updating from a pre-v4.0.0 release to this release. 
-  - Sorry to everybody who has already done this! I should have fixed this the first time around to save you the trouble, but I wasn't thinking about it at the time. 
+- You no longer need to manually clear cache or remove `bed0privacy` from the cache if updating from pre-v4.0.0
 
 ## v4.1.4 (2020-09-19)
 
@@ -110,26 +125,26 @@ Dillan
 
 ### Bug Fixes
 
-- Fixed a bug breaking the outlets, lightstrips, and foot warmer from functioning. 
+- Fixed a bug breaking the outlets, lightstrips, and foot warmer from functioning
 
 ## v4.1.2 (2020-09-18)
 
 ### Bug Fixes
 
-- Fixed a bug preventing the foot warming service from sending changes to the bed. 
+- Fixed a bug preventing the foot warming service from sending changes to the bed
 
 ## v4.1.1 (2020-09-17)
 
 ### Note
 
-- You will like run into an issue when updating that is preventing homebridge from running. Try removing the bed0privacy device from the device cache (or just clear the full cache). I updated how I handled this device in the plugin and it is conflicting with the version stored in the cache. 
+- If updating causes homebridge to stop running, try removing the `bed0privacy` device from the accessory cache
 
 ## v4.1.0 (2020-09-17)
 
 ### Changes
 
-- Added initial foot warmer support for flexfit 3 foundations. I don't have a foundation, so if you find any bugs, or something isn't working right, please file a ticket.
-- Set a step size for the sleep number slider so it is easier to hit the number you are aiming for.
+- Added initial foot warmer support for FlexFit 3 foundations
+- Set a step size for the sleep number slider
 
 ## v4.0.1 (2020-09-17)
 
@@ -142,7 +157,6 @@ Dillan
 ### Changes
 
 - Added initial support for foundation outlets and light strips
-  - This release introduces initial support for the outlets and light strips on the flex fit foundations that have them. I don't personally have one, so please report any issues when using them. If the light strips are capable of brightness control, I do not support that either. I need REST data to add that capability.
 
 ## v3.4.1 - v3.4.17 (2020-09-17)
 
@@ -158,14 +172,14 @@ Dillan
 
 ### Changes
 
-- Add support for having the foundations return to flat when the Homekit lightbulb is turned off
-- Debounce the sleep number update request so it doesn't trigger while attempting to set the slider to the desired value
+- Add support for having foundations return to flat when the HomeKit lightbulb is turned off
+- Debounce the sleep number update request
 
 ### Bug Fixes
 
-- Fixes for the various promise errors that have been reported
+- Fixes for various promise errors
 - Set the minimum sleep number value to 5
 
 ## Older
 
-- Refer to github commit details if you are interested. 
+- Refer to GitHub commit history for details.
