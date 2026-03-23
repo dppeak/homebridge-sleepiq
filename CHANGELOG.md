@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.12 (2026-03-23)
+
+### Changes
+
+- Updated Node.js engine requirement from `>=18.20.4` to `>=20.0.0` — Node 18 reached end of life in April 2025 and is no longer supported. Node v20, v22, and v24 are supported.
+
+---
+
 ## v6.0.11 (2026-03-23)
 
 ### Bug Fixes
