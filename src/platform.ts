@@ -119,14 +119,12 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     }
 
     this.snapi = new SleepIQAPI(cfg.email, cfg.password);
-    // Give the API class the logger so reauth events appear at info level
     this.snapi.setLogger(this.log);
 
     this.refreshTime = (cfg.refreshTime ?? 5) * 1000;
     this.sendDelay = (cfg.sendDelay ?? 2) * 1000;
     this.warmingTimer = cfg.warmingTimer ?? '6h';
 
-    // Feature toggles — unset means enabled.
     this.enableOccupancySensors = cfg.enableOccupancySensors ?? true;
     this.enableSleepNumberControls = cfg.enableSleepNumberControls ?? true;
     this.enablePrivacySwitch = cfg.enablePrivacySwitch ?? true;
@@ -154,7 +152,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     const accessory = rawAccessory as PlatformAccessory<SleepIQContext>;
     this.log.debug(`Configuring cached accessory: ${accessory.displayName} (${accessory.UUID})`);
 
-    // Legacy cleanup
     if (accessory.displayName.endsWith('privacy') && !accessory.context.bedName) {
       this.log.debug(`Stale legacy accessory (no bedName): ${accessory.displayName}. Marking for removal.`);
       accessory.context.type = 'remove';
@@ -164,7 +161,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       accessory.context.type = 'remove';
     }
 
-    // Duplicate detection
     const allDisplayNames = this.allAccessoryInstances().map(a => a.accessory.displayName);
     if (allDisplayNames.includes(accessory.displayName)) {
       this.log.warn(
@@ -174,11 +170,8 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       accessory.context.type = 'remove';
     }
 
-    // Remove accessories whose feature has been disabled in config
     if (this.isDisabledByConfig(accessory.context.type)) {
-      this.log.info(
-        `Accessory ${accessory.displayName} is disabled by config — removing from cache.`,
-      );
+      this.log.info(`Accessory ${accessory.displayName} is disabled by config — removing from cache.`);
       accessory.context.type = 'remove';
     }
 
@@ -203,6 +196,13 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     setInterval(() => this.fetchData(), this.refreshTime);
   }
 
+  /**
+   * Initial login only. Called once at startup.
+   * Session recovery during polling is handled entirely by SleepIQAPI._request()
+   * via its automatic reauth+retry on 401. The platform never calls this again
+   * after startup — doing so would race with the API-level reauth and invalidate
+   * the fresh session key before the retry can use it.
+   */
   private async authenticate(): Promise<void> {
     try {
       this.log.info('SleepIQ authenticating...');
@@ -219,12 +219,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     try {
       await this.snapi.familyStatus();
     } catch (err) {
-      if (this.isSessionExpired(err)) {
-        this.log.debug('Session expired during accessory setup -- re-authenticating.');
-        await this.authenticate();
-        await this.addAccessories();
-        return;
-      }
       this.handleApiError('familyStatus', err);
       return;
     }
@@ -241,7 +235,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
       await this.detectFoundationCapabilities(bedID);
 
-      // Privacy switch
       if (this.enablePrivacySwitch) {
         const privacyKey = `${bedID}privacy`;
         if (!this.privacyAccessories.has(privacyKey)) {
@@ -264,7 +257,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         const sideID = `${bedID}${bedside}`;
         const sideChar = bedside[0].toUpperCase();
 
-        // Occupancy sensors
         if (this.enableOccupancySensors) {
           const occKey = `${sideID}occupancy`;
           if (!this.occupancyAccessories.has(occKey)) {
@@ -274,7 +266,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           }
         }
 
-        // Sleep number control
         if (this.enableSleepNumberControls) {
           const numKey = `${sideID}number`;
           if (!this.numberAccessories.has(numKey)) {
@@ -293,7 +284,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         }
 
         if (this.hasFoundation) {
-          // Foundation head/foot controls
           if (this.enableFoundationControls) {
             const flexKey = `${sideID}flex`;
             if (!this.flexAccessories.has(flexKey)) {
@@ -309,7 +299,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             }
           }
 
-          // Outlets
           if (this.enableOutlets) {
             const hasOutlet = (bedside === 'rightSide' && this.hasOutletRight) ||
                               (bedside === 'leftSide' && this.hasOutletLeft);
@@ -329,7 +318,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             }
           }
 
-          // Lightstrips
           if (this.enableLightstrips) {
             const hasStrip = (bedside === 'rightSide' && this.hasLightstripRight) ||
                              (bedside === 'leftSide' && this.hasLightstripLeft);
@@ -349,7 +337,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             }
           }
 
-          // Foot warmers
           if (this.enableFootWarmers && this.hasWarmers) {
             const warmerKey = `${sideID}footwarmer`;
             if (!this.footWarmerAccessories.has(warmerKey)) {
@@ -367,7 +354,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         }
       }
 
-      // Virtual occupancy sensors: anySide and bothSides
       if (this.enableOccupancySensors) {
         for (const virtual of ['anySide', 'bothSides'] as const) {
           const vID = `${bedID}${virtual}`;
@@ -385,31 +371,31 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
   // --- Polling -----------------------------------------------------------------
 
+  /**
+   * Session recovery is handled entirely by SleepIQAPI._request() which
+   * automatically re-authenticates and retries on 401. The platform never
+   * calls authenticate() here — doing so would race with the API-level reauth
+   * and invalidate the fresh session key before the retry could use it.
+   * Any errors that survive the API-layer retry are logged and the poll cycle
+   * is skipped; the next interval will recover automatically.
+   */
   private async fetchData(): Promise<void> {
     this.log.debug('Polling SleepIQ...');
 
     try {
       await this.snapi.familyStatus();
     } catch (err) {
-      if (this.isSessionExpired(err)) {
-        this.log.debug('Session expired during poll -- re-authenticating.');
-        await this.authenticate();
-        return;
-      }
-      this.handleApiError('familyStatus poll', err);
+      this.handleApiError('familyStatus poll', err, [401]);
       return;
     }
 
     const status = this.snapi.json as FamilyStatusResponse;
 
+    // A 200 response whose body contains an Error field is a SleepIQ-level
+    // error, not a session issue (those are handled at the HTTP layer).
     if ('Error' in status) {
       const code = (status as unknown as { Error: ApiError }).Error.Code;
-      if (code === 50002 || code === 401) {
-        this.log.debug('Session expired (body error) -- re-authenticating.');
-        await this.authenticate();
-      } else {
-        this.log.error('Unknown SleepIQ error code during poll:', code);
-      }
+      this.log.error('SleepIQ returned body-level error during poll. Code:', code);
       return;
     }
 
@@ -439,11 +425,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         this.log.debug(`Privacy mode: ${pm.pauseMode}`);
         this.privacyAccessories.get(privacyKey)?.updatePrivacy(pm.pauseMode);
       } catch (err) {
-        if (this.isSessionExpired(err)) {
-          this.log.debug('Session expired fetching pause mode -- will re-auth on next poll.');
-          return;
-        }
-        this.log.error('Failed to retrieve bed pause mode:', err);
+        this.handleApiError('bedPauseMode', err, [401]);
       }
     }
 
@@ -455,9 +437,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         await this.snapi.foundationStatus();
         foundationData = this.snapi.json as FoundationStatusResponse;
       } catch (err) {
-        if (!this.isSessionExpired(err)) {
-          this.log.error('Failed to fetch foundation status:', err);
-        }
+        this.handleApiError('foundationStatus poll', err, [401]);
       }
     }
 
@@ -467,9 +447,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         await this.snapi.footWarmingStatus();
         footWarmerData = this.snapi.json as FootWarmingStatusResponse;
       } catch (err) {
-        if (!this.isSessionExpired(err)) {
-          this.log.error('Failed to fetch foot warmer status:', err);
-        }
+        this.handleApiError('footWarmingStatus poll', err, [401]);
       }
     }
 
@@ -525,9 +503,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
                 this.outletAccessories.get(`${sideID}outlet`)?.updateOutlet(od.setting);
               }
             } catch (err) {
-              if (!this.isSessionExpired(err)) {
-                this.log.error('Failed to fetch outlet status:', err);
-              }
+              this.handleApiError('outletStatus poll', err, [401]);
             }
           }
         }
@@ -544,9 +520,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
                 this.lightStripAccessories.get(`${sideID}lightstrip`)?.updateLightStrip(ld.setting);
               }
             } catch (err) {
-              if (!this.isSessionExpired(err)) {
-                this.log.error('Failed to fetch lightstrip status:', err);
-              }
+              this.handleApiError('lightstripStatus poll', err, [401]);
             }
           }
         }
@@ -718,15 +692,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       ...this.lightStripAccessories.values(),
       ...this.footWarmerAccessories.values(),
     ];
-  }
-
-  private isSessionExpired(err: unknown): boolean {
-    try {
-      const parsed = JSON.parse(String(err)) as { statusCode: number };
-      return parsed.statusCode === 401;
-    } catch {
-      return false;
-    }
   }
 
   private handleApiError(context: string, err: unknown, suppressCodes: number[] = []): void {

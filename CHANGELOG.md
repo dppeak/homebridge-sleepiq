@@ -4,15 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.7 (2026-03-23)
+
+### Bug Fixes
+
+- **Fixed the root cause of persistent 401 errors on outlet/write operations.** The platform had two separate session-recovery code paths that were racing with each other:
+  - `SleepIQAPI._request()` would detect a 401, call `_reauth()`, get a fresh key, then retry
+  - Simultaneously, `platform.fetchData()` would also detect the 401 and call `authenticate()` → `login()`, which issued a second login request that invalidated the key `_reauth()` had just obtained
+  - The retry then fired with a revoked key and failed with 401 again
+- Removed all session-expiry handling from `platform.ts`. Session recovery is now handled exclusively by `SleepIQAPI._request()` via its automatic reauth+retry. The platform calls `authenticate()` only once at startup
+- `platform.ts` now suppresses 401 errors in `handleApiError()` during polling (they are already handled at the API layer and do not need to be logged)
+
+---
+
 ## v6.0.6 (2026-03-23)
 
 ### Changes
 
-- Added Homebridge logger to `SleepIQAPI` via `setLogger()` so re-authentication events now appear in the Homebridge log at info level (visible without debug mode)
-- `authenticate()` now logs at info level so startup auth is always visible
-- Added info log when re-authentication is triggered by a 401, when it succeeds (showing last 6 chars of new session key), and when it fails
+- Added Homebridge logger to `SleepIQAPI` via `setLogger()` so re-authentication events appear in the Homebridge log at info level
+- Added info logging when re-authentication is triggered, succeeds, or fails
 - Added info log when a request is retried after re-authentication
-- These logs will help diagnose any remaining session issues
 
 ---
 
@@ -20,8 +31,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed 401 retry introduced in v6.0.4 not actually working: the retry was rebuilding the URL with the stale `_k` session key captured at call time, so re-authentication succeeded but the retried request still failed with 401
-- `_k` is no longer passed as a static parameter by each method — it is now injected automatically by `_buildURL()` at the moment each request (or retry) is built, so the retry always uses the freshly updated `this.key`
+- Fixed 401 retry introduced in v6.0.4 not actually working: the retry was rebuilding the URL with the stale `_k` session key captured at call time
+- `_k` is now injected automatically by `_buildURL()` at request build time so retries always use the freshly updated session key
 
 ---
 
@@ -29,8 +40,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed write operations (outlet on/off, sleep number, foot warmer, foundation position) silently failing when the session expires — they now automatically re-authenticate and retry instead of dropping the HomeKit action
-- Added concurrency guard so multiple simultaneous 401s (e.g. rapid HomeKit toggles) share a single re-authentication call rather than hammering the login endpoint
+- Fixed write operations (outlet on/off, sleep number, foot warmer, foundation position) silently failing when the session expires
+- Added concurrency guard so multiple simultaneous 401s share a single re-authentication call
 
 ---
 
@@ -38,17 +49,10 @@ All notable changes to this project will be documented in this file.
 
 ### New Features
 
-- **Per-feature enable/disable toggles** — each accessory category can now be independently enabled or disabled in the Homebridge UI config form:
-  - Enable Occupancy Sensors (left/right/anySide/bothSides)
-  - Enable Sleep Number Controls
-  - Enable Privacy Switch
-  - Enable Foundation Controls (head/foot position)
-  - Enable Foundation Outlets
-  - Enable Foundation Lightstrips
-  - Enable Foot Warmers
+- Per-feature enable/disable toggles in the Homebridge UI config form
 - All toggles default to `true` so existing installs are unaffected
-- Disabling a feature automatically removes already-cached accessories of that type from HomeKit on restart — no manual cache clearing needed
-- Polling skips API calls for disabled feature types, reducing network traffic
+- Disabling a feature removes cached accessories from HomeKit on restart
+- Polling skips API calls for disabled features
 
 ---
 
@@ -56,11 +60,11 @@ All notable changes to this project will be documented in this file.
 
 ### New Features
 
-- **Homebridge UI config form** — added `config.schema.json` so the plugin can be configured through the Homebridge UI settings panel instead of requiring manual JSON editing
+- Added `config.schema.json` for Homebridge UI config form
 
 ### Bug Fixes
 
-- Fixed config field name: `delay` renamed to `sendDelay` to match what the plugin actually reads (the old name was silently ignored)
+- Fixed config field name `delay` → `sendDelay`
 
 ---
 
@@ -68,10 +72,9 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Fixed session expiry (HTTP 401) not triggering re-authentication during polling — the plugin would log an error and stop updating until Homebridge was restarted
-- Fixed session expiry during startup foundation detection preventing foundation accessories from ever being created
-- Fixed `npx tsc` resolving to a wrong standalone `tsc` package instead of the local TypeScript devDependency — build now uses `./node_modules/.bin/tsc`
-- Added `DOM` to `tsconfig.json` lib array to provide types for `fetch`, `URL`, `Headers`, `setTimeout`, and `setInterval`
+- Fixed session expiry not triggering re-authentication during polling
+- Fixed session expiry during startup preventing foundation accessories from being created
+- Fixed build script and TypeScript lib configuration
 
 ---
 
@@ -79,74 +82,15 @@ All notable changes to this project will be documented in this file.
 
 > **Community fork** of [DeeeeLAN/homebridge-sleepiq](https://github.com/DeeeeLAN/homebridge-sleepiq) at v4.2.0, maintained by [dppeak](https://github.com/dppeak).
 
-### Breaking Changes
-
-- **Node.js >= 18.20.4 required** (previously >= 0.12.0)
-- **Homebridge >= 1.8.0 required** (previously >= 0.2.0)
-- Project rewritten in TypeScript — source in `src/`, compiled output in `dist/`
-
-### Changed
-
-- Full rewrite in **TypeScript** with strict mode; split into `src/api.ts`, `src/platform.ts`, and `src/accessories/sn*.ts`
-- Replaced abandoned `request-promise-native` with **native `fetch`** (Node 18+) — zero runtime dependencies
-- Updated for **Homebridge 2.0 / HAP-NodeJS v1** compatibility
-- Characteristic handlers now set up in accessory constructors
-- Typed accessory Maps per class — no internal type casting
+- Full TypeScript rewrite
+- Native `fetch` replaces `request-promise-native`
+- Homebridge 2.0 / HAP-NodeJS v1 compatibility
 
 ---
 
 ## v4.2.0 (2020-10-16)
 
-### Changes
-
-- Add a "bothSidesOccupied" sensor that will trigger if both sides of the bed are occupied
-
-## v4.1.16 (2020-09-23)
-
-### Bug Fixes
-
-- Fixed right lightstrip and outlet controlling the left side
-
-## v4.1.15 (2020-09-22)
-
-### Bug Fixes
-
-- Fixed bug with outlet and light controls not updating the bed state
-
-## v4.1.14 (2020-09-22)
-
-### Bug Fixes
-
-- Fixed `sideName is not defined` error
-- Cleaned up error message output
-
-## v4.1.13 (2020-09-22)
-
-### Bug Fixes
-
-- Fixed outlets and lightstrips not getting created and causing homebridge to restart
-
-## v4.1.12 (2020-09-22)
-
-### Bug Fixes
-
-- Fixed refresh time not working issue (#29)
-
-## v4.1.11 - v4.0.0 (2020-09-17 to 2020-09-22)
-
-- Various bug fixes; refer to GitHub commit history for details.
-
-## v3.4.0 (2020-09-16)
-
-### Changes
-
-- Add support for having foundations return to flat when the HomeKit lightbulb is turned off
-- Debounce the sleep number update request
-
-### Bug Fixes
-
-- Fixes for various promise errors
-- Set the minimum sleep number value to 5
+- Add a "bothSidesOccupied" sensor
 
 ## Older
 
