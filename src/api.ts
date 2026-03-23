@@ -3,11 +3,17 @@
  *
  * Session management strategy:
  * - The platform calls proactiveReauth() on a timer every SESSION_REFRESH_MS
- *   to keep the session fresh before it expires (~60s TTL observed).
- * - On a 401 (fallback for edge cases), _rawRequest re-authenticates once
- *   and retries. This should rarely trigger with proactive auth in place.
+ *   to keep the session fresh before it expires.
+ * - On a 401 (edge case fallback), _rawRequest re-authenticates once and retries.
  * - All public methods are serialized through a single promise queue so only
  *   one HTTP request is in-flight at a time.
+ *
+ * Cookie management:
+ * - Cookies are stored in a Map<name, value> and MERGED on each response, matching
+ *   the behaviour of request-promise-native with jar: true used in the original
+ *   plugin. Previous versions replaced the entire cookie string on each response,
+ *   which discarded cookies set by the login that were not refreshed by later calls.
+ *   This caused sessions to become invalid almost immediately after the first poll.
  */
 
 import type { Logging } from 'homebridge';
@@ -22,10 +28,10 @@ import {
 
 const BASE_URL = 'https://api.sleepiq.sleepnumber.com/rest';
 
-/** Fallback retry attempts on 401. Kept at 1 since proactive auth is primary. */
+/** Fallback retry attempts on 401. Primary recovery is proactive auth. */
 const MAX_AUTH_RETRIES = 1;
 
-/** Milliseconds to wait after reauth before retrying (session propagation delay). */
+/** Milliseconds to wait after reauth before retrying (session propagation). */
 const REAUTH_RETRY_DELAY_MS = 1000;
 
 export class SleepIQAPI {
@@ -41,10 +47,14 @@ export class SleepIQAPI {
   /** Set to true to return hard-coded fixture data (useful for development). */
   testing: boolean;
 
-  private _cookieStr: string;
   private _log: Logging | null = null;
   /** Serial request queue — only one HTTP job runs at a time. */
   private _queue: Promise<void> = Promise.resolve();
+  /**
+   * Cookie jar — keyed by cookie name, value is the raw cookie value.
+   * Merged (not replaced) on every response, matching jar: true behaviour.
+   */
+  private _cookieJar: Map<string, string> = new Map();
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -55,7 +65,6 @@ export class SleepIQAPI {
     this.json = {};
     this.defaultBed = 0;
     this.testing = false;
-    this._cookieStr = '';
   }
 
   setLogger(log: Logging): void {
@@ -81,24 +90,50 @@ export class SleepIQAPI {
 
   private _headers(): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this._cookieStr) {
-      headers['Cookie'] = this._cookieStr;
+    const cookieStr = Array.from(this._cookieJar.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
+    if (cookieStr) {
+      headers['Cookie'] = cookieStr;
     }
     return headers;
   }
 
+  /**
+   * Merge Set-Cookie headers into the cookie jar.
+   *
+   * This replicates the behaviour of request-promise-native with jar: true:
+   * existing cookies are updated, new cookies are added, and no cookie is
+   * ever dropped just because it wasn't present in the latest response.
+   *
+   * Previous versions replaced the entire cookie string on each response.
+   * If login set cookies A, B, C and a later response refreshed only A,
+   * B and C would be lost — causing the session to break after the first poll.
+   */
   private _storeCookies(headers: Headers): void {
-    let cookies: string[];
+    let setCookieValues: string[];
+
+    // Node 18.14+ exposes getSetCookie() which returns one string per
+    // Set-Cookie header, avoiding the ambiguity of comma-splitting.
     if (typeof (headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function') {
-      cookies = (headers as unknown as { getSetCookie: () => string[] })
-        .getSetCookie()
-        .map(c => c.split(';')[0].trim());
+      setCookieValues = (headers as unknown as { getSetCookie: () => string[] }).getSetCookie();
     } else {
+      // Older Node: fall back to the combined header. Comma-splitting is
+      // imperfect (values can contain commas) but acceptable here since
+      // SleepIQ cookie values don't include commas in practice.
       const raw = headers.get('set-cookie');
-      cookies = raw ? raw.split(',').map(c => c.split(';')[0].trim()) : [];
+      setCookieValues = raw ? raw.split(',') : [];
     }
-    if (cookies.length > 0) {
-      this._cookieStr = cookies.join('; ');
+
+    for (const cookieStr of setCookieValues) {
+      // Strip directives (Path, HttpOnly, Expires, etc.) — keep name=value only.
+      const nameValue = cookieStr.split(';')[0].trim();
+      const eqIdx = nameValue.indexOf('=');
+      if (eqIdx > 0) {
+        const name = nameValue.substring(0, eqIdx).trim();
+        const value = nameValue.substring(eqIdx + 1).trim();
+        this._cookieJar.set(name, value);
+      }
     }
   }
 
@@ -149,8 +184,6 @@ export class SleepIQAPI {
         this._log?.debug(`SleepIQ session refreshed proactively (key: ...${this.key.slice(-6)}).`);
       } catch (err) {
         this._log?.warn('SleepIQ proactive session refresh failed — will retry on next cycle:', String(err));
-        // Do not throw — a failed proactive refresh is non-fatal; the reactive
-        // reauth in _rawRequest will catch any 401s that result.
       }
     });
   }
@@ -191,8 +224,7 @@ export class SleepIQAPI {
       if (response.status === 401 && retriesLeft > 0) {
         await this._reauth();
         await this._delay(REAUTH_RETRY_DELAY_MS);
-        const attempt = MAX_AUTH_RETRIES - retriesLeft + 1;
-        this._log?.info(`Retrying ${method} ${path} (attempt ${attempt}/${MAX_AUTH_RETRIES})...`);
+        this._log?.info(`Retrying ${method} ${path} after reauth...`);
         return this._rawRequest(method, path, { params, body, injectKey, retriesLeft: retriesLeft - 1 });
       }
       throw JSON.stringify({ statusCode: response.status, body: text });

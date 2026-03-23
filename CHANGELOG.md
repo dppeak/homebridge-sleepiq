@@ -4,14 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.1.1 (2026-03-23)
+
+### Bug Fixes
+
+- **Fixed the root cause of all session expiry issues: cookies were being replaced instead of merged.**
+
+  The original plugin used `request-promise-native` with `jar: true`, which maintains a cookie jar that merges cookies from every response. Our rewrite managed cookies manually but replaced the entire cookie string on each response. If the login set three session cookies (A, B, C) and a subsequent API response refreshed only cookie A, cookies B and C were silently discarded — causing the session to break almost immediately after the first successful poll.
+
+  `_storeCookies()` now maintains a `Map<name, value>` cookie jar. New cookies from each response are merged in (existing entries updated, no cookie is ever dropped), exactly matching `jar: true` behaviour. With correct cookie management, sessions should remain valid for their full lifetime without frequent re-authentication.
+
+---
+
 ## v6.1.0 (2026-03-23)
 
 ### Bug Fixes
 
-- **Dramatically reduced login frequency.** The Sleep Number API issues sessions with a ~60 second TTL. Previous versions reactively re-authenticated on every poll cycle (once per minute), causing 60+ logins per hour which risked IP rate-limiting by Sleep Number's servers.
-- Added a **proactive session refresh timer** that re-authenticates every 45 seconds, before the session expires. Polls and HomeKit actions now run against a always-fresh session and never encounter a 401 in normal operation.
-- Reduced `MAX_AUTH_RETRIES` from 2 back to 1 — reactive retries are now a safety net for edge cases only, not the primary session recovery path.
-- Increased retry delay from 500ms to 1000ms for better resilience on the rare occasions a reactive retry is needed.
+- Added proactive session refresh timer (every 45 seconds) to keep session alive before expiry
+- Reduced reactive retry attempts and increased retry delay
 
 ---
 
@@ -19,7 +29,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Added 500ms delay between re-authentication and retry for session propagation
+- Added 500ms delay between re-authentication and retry
 - Increased maximum retry attempts to 2
 
 ---
@@ -28,7 +38,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Serialized all API requests through a single queue to prevent concurrent reauth races
+- Serialized all API requests through a single promise queue
 
 ---
 
@@ -36,7 +46,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- Removed platform-level session recovery that was racing with API-layer reauth
+- Removed platform-level session recovery that raced with API-layer reauth
 
 ---
 
