@@ -4,7 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## v6.0.0 (2025)
+## v6.0.3 (2026-03-23)
+
+### New Features
+
+- **Per-feature enable/disable toggles** — each accessory category can now be independently enabled or disabled in the Homebridge UI config form:
+  - Enable Occupancy Sensors (left/right/anySide/bothSides)
+  - Enable Sleep Number Controls
+  - Enable Privacy Switch
+  - Enable Foundation Controls (head/foot position)
+  - Enable Foundation Outlets
+  - Enable Foundation Lightstrips
+  - Enable Foot Warmers
+- All toggles default to `true` so existing installs are unaffected
+- Disabling a feature automatically removes already-cached accessories of that type from HomeKit on restart — no manual cache clearing needed
+- Polling skips API calls for disabled feature types, reducing network traffic
+
+---
+
+## v6.0.2 (2026-03-23)
+
+### New Features
+
+- **Homebridge UI config form** — added `config.schema.json` so the plugin can be configured through the Homebridge UI settings panel instead of requiring manual JSON editing
+
+### Bug Fixes
+
+- Fixed config field name: `delay` renamed to `sendDelay` to match what the plugin actually reads (the old name was silently ignored)
+
+---
+
+## v6.0.1 (2026-03-23)
+
+### Bug Fixes
+
+- Fixed session expiry (HTTP 401) not triggering re-authentication during polling — the plugin would log an error and stop updating until Homebridge was restarted
+- Fixed session expiry during startup foundation detection preventing foundation accessories from ever being created
+- Fixed `npx tsc` resolving to a wrong standalone `tsc` package instead of the local TypeScript devDependency — build now uses `./node_modules/.bin/tsc`
+- Added `DOM` to `tsconfig.json` lib array to provide types for `fetch`, `URL`, `Headers`, `setTimeout`, and `setInterval`
+
+---
+
+## v6.0.0 (2026-03-23)
 
 > **Community fork** of [DeeeeLAN/homebridge-sleepiq](https://github.com/DeeeeLAN/homebridge-sleepiq) at v4.2.0, maintained by [dppeak](https://github.com/dppeak).
 
@@ -12,23 +53,21 @@ All notable changes to this project will be documented in this file.
 
 - **Node.js >= 18.20.4 required** (previously >= 0.12.0)
 - **Homebridge >= 1.8.0 required** (previously >= 0.2.0)
-- Project is now TypeScript — source lives in `src/`, compiled output in `dist/`
+- Project rewritten in TypeScript — source in `src/`, compiled output in `dist/`
 
 ### Changed
 
 - Full rewrite in **TypeScript** with strict mode; split into `src/api.ts`, `src/platform.ts`, and `src/accessories/sn*.ts`
 - Replaced abandoned `request-promise-native` with **native `fetch`** (Node 18+) — zero runtime dependencies
 - Updated for **Homebridge 2.0 / HAP-NodeJS v1** compatibility:
-  - Removed all `accessory.reachable` assignments (reachability removed from HAP-NodeJS v1)
+  - Removed all `accessory.reachable` assignments (removed from HAP-NodeJS v1)
   - Replaced `.on('get', callback)` / `.on('set', callback)` with `.onGet()` / `.onSet()`
   - Removed use of removed internal HAP properties (`_associatedHAPAccessory`, `_associatedPlatform`)
   - Fixed `removeMarkedAccessories()` splice bug that prevented stale accessories from ever being removed
-- Characteristic handlers now set up in **accessory constructors** (no more `getServices()` pattern)
-- **Typed accessory Maps** per class — no internal type casting
-- Fixed `sendDelay` not being passed to `SnNumber` in `addAccessories()`
+- Characteristic handlers now set up in accessory constructors
+- Typed accessory Maps per class — no internal type casting
+- Fixed `sendDelay` not being passed to `SnNumber` during accessory registration
 - Removed dead `waitForBedToStopMoving` method from `SnFlex`
-- Added `prepare` npm script so the plugin builds automatically on `npm install`
-- Added `"files": ["dist"]` to `package.json` so published packages only include compiled output
 
 ---
 
