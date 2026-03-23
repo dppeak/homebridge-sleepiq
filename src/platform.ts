@@ -30,7 +30,7 @@ import { SnOutlet } from './accessories/snOutlet';
 import { SnLightStrip } from './accessories/snLightStrip';
 import { SnFootWarmer } from './accessories/snFootWarmer';
 
-// ─── Config shape ─────────────────────────────────────────────────────────────
+// --- Config shape ---------------------------------------------------------------
 
 interface SleepIQConfig extends PlatformConfig {
   email: string;
@@ -43,7 +43,7 @@ interface SleepIQConfig extends PlatformConfig {
   warmingTimer?: string;
 }
 
-// ─── Platform ─────────────────────────────────────────────────────────────────
+// --- Platform ------------------------------------------------------------------
 
 export class SleepIQPlatform implements DynamicPlatformPlugin {
   private readonly hap: HAPBundle;
@@ -87,7 +87,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
     if (!cfg?.email || !cfg?.password) {
       this.log.warn('Ignoring SleepIQ setup because email or password was not provided.');
-      // Early return — Homebridge will still load but the platform won't register accessories.
       this.snapi = new SleepIQAPI('', '');
       this.refreshTime = 5000;
       this.sendDelay = 2000;
@@ -108,33 +107,22 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     });
   }
 
-  // ─── Homebridge lifecycle ──────────────────────────────────────────────────
+  // --- Homebridge lifecycle ----------------------------------------------------
 
-  /**
-   * Called by Homebridge for every accessory loaded from cache.
-   * We restore the in-memory accessory object and re-attach handlers.
-   */
   configureAccessory(rawAccessory: PlatformAccessory): void {
     const accessory = rawAccessory as PlatformAccessory<SleepIQContext>;
     this.log.debug(`Configuring cached accessory: ${accessory.displayName} (${accessory.UUID})`);
 
-    // ── Legacy cleanup ──────────────────────────────────────────────────────
-    // Old accessories without a bedName context field should be removed.
-    if (
-      accessory.displayName.endsWith('privacy') &&
-      !accessory.context.bedName
-    ) {
+    if (accessory.displayName.endsWith('privacy') && !accessory.context.bedName) {
       this.log.debug(`Stale legacy accessory (no bedName): ${accessory.displayName}. Marking for removal.`);
       accessory.context.type = 'remove';
     }
 
-    // Very old accessories whose name ends in 'Side' (pre-v4 naming scheme).
     if (accessory.displayName.endsWith('Side')) {
       this.log.debug(`Stale legacy accessory (old name): ${accessory.displayName}. Marking for removal.`);
       accessory.context.type = 'remove';
     }
 
-    // Duplicate detection across all typed maps.
     const allDisplayNames = this.allAccessoryInstances().map(a => a.accessory.displayName);
     if (allDisplayNames.includes(accessory.displayName)) {
       this.log.warn(
@@ -153,7 +141,7 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     this.restoreAccessory(accessory);
   }
 
-  // ─── Startup ───────────────────────────────────────────────────────────────
+  // --- Startup -----------------------------------------------------------------
 
   private async didFinishLaunching(): Promise<void> {
     this.removeMarkedAccessories();
@@ -167,20 +155,26 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
 
   private async authenticate(): Promise<void> {
     try {
-      this.log.debug('SleepIQ authenticating…');
+      this.log.debug('SleepIQ authenticating...');
       await this.snapi.login();
+      this.log.debug('SleepIQ authenticated successfully.');
     } catch (err) {
-      this.log.error('Failed to authenticate with SleepIQ — check your email and password.', err);
+      this.log.error('Failed to authenticate with SleepIQ -- check your email and password.', err);
     }
   }
 
-  // ─── Accessory Registration ────────────────────────────────────────────────
+  // --- Accessory Registration --------------------------------------------------
 
   private async addAccessories(): Promise<void> {
-    // ── Fetch bed list ──────────────────────────────────────────────────────
     try {
       await this.snapi.familyStatus();
     } catch (err) {
+      if (this.isSessionExpired(err)) {
+        this.log.debug('Session expired during accessory setup -- re-authenticating.');
+        await this.authenticate();
+        await this.addAccessories();
+        return;
+      }
       this.handleApiError('familyStatus', err);
       return;
     }
@@ -195,10 +189,8 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       const bedName = `bed${index}`;
       const bedID = bed.bedId;
 
-      // ── Detect foundation capabilities (once per bed) ───────────────────
       await this.detectFoundationCapabilities(bedID);
 
-      // ── Privacy switch ──────────────────────────────────────────────────
       const privacyKey = `${bedID}privacy`;
       if (!this.privacyAccessories.has(privacyKey)) {
         this.registerAccessory(
@@ -213,14 +205,12 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         this.log.debug(`${bedName} privacy already in cache`);
       }
 
-      // ── Bed sides ───────────────────────────────────────────────────────
       const sides = this.extractSides(bed);
       for (const [bedside, _sideData] of Object.entries(sides)) {
         const sideName = `${bedName}${bedside}`;
         const sideID = `${bedID}${bedside}`;
-        const sideChar = bedside[0].toUpperCase(); // 'L' or 'R'
+        const sideChar = bedside[0].toUpperCase();
 
-        // Occupancy sensor
         const occKey = `${sideID}occupancy`;
         if (!this.occupancyAccessories.has(occKey)) {
           this.registerOccupancySensor(sideName, sideID, occKey);
@@ -228,7 +218,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           this.log.debug(`${sideName} occupancy already in cache`);
         }
 
-        // Sleep number control
         const numKey = `${sideID}number`;
         if (!this.numberAccessories.has(numKey)) {
           this.log.info(`Found BedSide Number Control: ${sideName}`);
@@ -245,7 +234,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         }
 
         if (this.hasFoundation) {
-          // Foundation flex
           const flexKey = `${sideID}flex`;
           if (!this.flexAccessories.has(flexKey)) {
             this.log.info(`Found BedSide Flex Foundation: ${sideName}`);
@@ -259,7 +247,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             );
           }
 
-          // Outlet
           const hasOutlet = (bedside === 'rightSide' && this.hasOutletRight) ||
                             (bedside === 'leftSide' && this.hasOutletLeft);
           if (hasOutlet) {
@@ -277,7 +264,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             }
           }
 
-          // Lightstrip
           const hasStrip = (bedside === 'rightSide' && this.hasLightstripRight) ||
                            (bedside === 'leftSide' && this.hasLightstripLeft);
           if (hasStrip) {
@@ -295,7 +281,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
             }
           }
 
-          // Foot warmer
           if (this.hasWarmers) {
             const warmerKey = `${sideID}footwarmer`;
             if (!this.footWarmerAccessories.has(warmerKey)) {
@@ -310,10 +295,9 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
               );
             }
           }
-        } // hasFoundation
-      } // for bedside
+        }
+      }
 
-      // ── Virtual sensors: anySide / bothSides ────────────────────────────
       for (const virtual of ['anySide', 'bothSides'] as const) {
         const vID = `${bedID}${virtual}`;
         const vName = `${bedName}${virtual}`;
@@ -324,28 +308,35 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           this.log.debug(`${vName} occupancy already in cache`);
         }
       }
-    } // for bed
+    }
   }
 
-  // ─── Polling ───────────────────────────────────────────────────────────────
+  // --- Polling -----------------------------------------------------------------
 
   private async fetchData(): Promise<void> {
-    this.log.debug('Polling SleepIQ…');
+    this.log.debug('Polling SleepIQ...');
 
     try {
       await this.snapi.familyStatus();
     } catch (err) {
+      // A thrown 401 means the session expired — re-authenticate and wait for
+      // the next interval to retry rather than hammering the API immediately.
+      if (this.isSessionExpired(err)) {
+        this.log.debug('Session expired during poll -- re-authenticating.');
+        await this.authenticate();
+        return;
+      }
       this.handleApiError('familyStatus poll', err);
       return;
     }
 
     const status = this.snapi.json as FamilyStatusResponse;
 
-    // Re-authenticate if the session expired.
+    // A 200 response whose body contains an Error also means session expired.
     if ('Error' in status) {
       const code = (status as unknown as { Error: ApiError }).Error.Code;
       if (code === 50002 || code === 401) {
-        this.log.debug('Session expired — re-authenticating.');
+        this.log.debug('Session expired (body error) -- re-authenticating.');
         await this.authenticate();
       } else {
         this.log.error('Unknown SleepIQ error code during poll:', code);
@@ -371,40 +362,49 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    // ── Privacy ──────────────────────────────────────────────────────────────
     this.snapi.bedID = bedID;
+
+    // Privacy
     try {
       await this.snapi.bedPauseMode();
       const pm = this.snapi.json as PauseModeResponse;
       this.log.debug(`Privacy mode: ${pm.pauseMode}`);
       this.privacyAccessories.get(privacyKey)?.updatePrivacy(pm.pauseMode);
     } catch (err) {
+      if (this.isSessionExpired(err)) {
+        this.log.debug('Session expired fetching pause mode -- will re-auth on next poll.');
+        return;
+      }
       this.log.error('Failed to retrieve bed pause mode:', err);
     }
 
-    // ── Foundation ───────────────────────────────────────────────────────────
+    // Foundation
     let foundationData: FoundationStatusResponse | undefined;
     if (this.hasFoundation) {
       try {
         await this.snapi.foundationStatus();
         foundationData = this.snapi.json as FoundationStatusResponse;
       } catch (err) {
-        this.log.error('Failed to fetch foundation status:', err);
+        if (!this.isSessionExpired(err)) {
+          this.log.error('Failed to fetch foundation status:', err);
+        }
       }
     }
 
-    // ── Foot warming ─────────────────────────────────────────────────────────
+    // Foot warming
     let footWarmerData: FootWarmingStatusResponse | undefined;
     if (this.hasWarmers) {
       try {
         await this.snapi.footWarmingStatus();
         footWarmerData = this.snapi.json as FootWarmingStatusResponse;
       } catch (err) {
-        this.log.error('Failed to fetch foot warmer status:', err);
+        if (!this.isSessionExpired(err)) {
+          this.log.error('Failed to fetch foot warmer status:', err);
+        }
       }
     }
 
-    // ── Per-side updates ─────────────────────────────────────────────────────
+    // Per-side updates
     const sides = this.extractSides(bed);
     let anySideOccupied = false;
     let bothSidesOccupied = true;
@@ -418,19 +418,16 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         return;
       }
 
-      // Occupancy
       const occupied = sideData.isInBed;
       this.log.debug(`Occupancy: ${bedside} = ${occupied}`);
       this.occupancyAccessories.get(`${sideID}occupancy`)?.setOccupancyDetected(occupied);
       anySideOccupied = anySideOccupied || occupied;
       bothSidesOccupied = bothSidesOccupied && occupied;
 
-      // Sleep number
       this.log.debug(`Sleep number: ${bedside} = ${sideData.sleepNumber}`);
       this.numberAccessories.get(`${sideID}number`)?.updateSleepNumber(sideData.sleepNumber);
 
       if (this.hasFoundation) {
-        // Flex positions
         if (foundationData) {
           if (bedside === 'leftSide') {
             this.flexAccessories.get(`${sideID}flex`)?.updateFoundation(
@@ -445,7 +442,6 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           }
         }
 
-        // Outlets
         const hasOutlet = (bedside === 'rightSide' && this.hasOutletRight) ||
                           (bedside === 'leftSide' && this.hasOutletLeft);
         if (hasOutlet) {
@@ -457,11 +453,12 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
               this.outletAccessories.get(`${sideID}outlet`)?.updateOutlet(od.setting);
             }
           } catch (err) {
-            this.log.error('Failed to fetch outlet status:', err);
+            if (!this.isSessionExpired(err)) {
+              this.log.error('Failed to fetch outlet status:', err);
+            }
           }
         }
 
-        // Lightstrips
         const hasStrip = (bedside === 'rightSide' && this.hasLightstripRight) ||
                          (bedside === 'leftSide' && this.hasLightstripLeft);
         if (hasStrip) {
@@ -473,26 +470,26 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
               this.lightStripAccessories.get(`${sideID}lightstrip`)?.updateLightStrip(ld.setting);
             }
           } catch (err) {
-            this.log.error('Failed to fetch lightstrip status:', err);
+            if (!this.isSessionExpired(err)) {
+              this.log.error('Failed to fetch lightstrip status:', err);
+            }
           }
         }
 
-        // Foot warmer
         if (this.hasWarmers && footWarmerData) {
           const rawTemp = bedside === 'leftSide'
             ? footWarmerData.footWarmingStatusLeft
             : footWarmerData.footWarmingStatusRight;
           this.footWarmerAccessories.get(`${sideID}footwarmer`)?.updateFootWarmer(rawTemp);
         }
-      } // hasFoundation
-    } // for bedside
+      }
+    }
 
-    // ── Virtual sensors ───────────────────────────────────────────────────────
     this.occupancyAccessories.get(`${bedID}anySideoccupancy`)?.setOccupancyDetected(anySideOccupied);
     this.occupancyAccessories.get(`${bedID}bothSidesoccupancy`)?.setOccupancyDetected(bothSidesOccupied);
   }
 
-  // ─── Accessory Cache Management ────────────────────────────────────────────
+  // --- Accessory Cache Management ----------------------------------------------
 
   private removeMarkedAccessories(): void {
     const toRemove = this.staleAccessories.filter(a => a.context.remove === true);
@@ -500,16 +497,11 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
       this.log.debug(`Removing ${toRemove.length} stale accessory/accessories from cache.`);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, toRemove);
     }
-    // Remove from stale list
     this.staleAccessories.splice(0, this.staleAccessories.length,
       ...this.staleAccessories.filter(a => a.context.remove !== true),
     );
   }
 
-  /**
-   * Restore an accessory loaded from the Homebridge cache.
-   * Re-creates the in-memory accessory object so that handlers are re-attached.
-   */
   private restoreAccessory(accessory: PlatformAccessory<SleepIQContext>): void {
     const { sideID, type, sideName } = accessory.context;
 
@@ -542,17 +534,8 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  // ─── Helpers ───────────────────────────────────────────────────────────────
+  // --- Helpers -----------------------------------------------------------------
 
-  /**
-   * Generic helper that creates and registers a new platform accessory.
-   * @param key     The Map key (e.g. `${sideID}number`)
-   * @param name    Display name passed to `new PlatformAccessory()`
-   * @param type    Stored in `context.type` for cache restoration
-   * @param context Full context object to persist
-   * @param factory Creates the typed accessory from the PlatformAccessory
-   * @param store   Stores the resulting typed accessory into the appropriate Map
-   */
   private registerAccessory<T>(
     key: string,
     name: string,
@@ -583,13 +566,13 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Probe the bed for optional foundation hardware and set the `has*` flags.
-   * Only called once per bed during `addAccessories()`.
+   * Probe the bed for optional foundation hardware and set the has* flags.
+   * A 401 here means the session expired during startup — we suppress it and
+   * schedule a re-auth so the next poll cycle picks up foundation data.
    */
   private async detectFoundationCapabilities(bedID: string): Promise<void> {
     this.snapi.bedID = bedID;
 
-    // Foundation base
     try {
       await this.snapi.foundationStatus();
       const fs = this.snapi.json as FoundationStatusResponse;
@@ -602,14 +585,16 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         this.hasFoundation = true;
       }
     } catch (err) {
-      this.handleApiError('foundationStatus', err, [404]);
+      // Suppress both 404 (no foundation) and 401 (session expired at startup).
+      // A 401 here is non-fatal — polling will re-authenticate and the next
+      // call to addAccessories() will retry foundation detection.
+      this.handleApiError('foundationStatus', err, [404, 401]);
     }
 
     if (!this.hasFoundation) {
       return;
     }
 
-    // Outlets
     for (const outletId of ['1', '2', '3', '4'] as const) {
       try {
         await this.snapi.outletStatus(outletId);
@@ -621,11 +606,10 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
           if (outletId === '4') { this.hasLightstripLeft = true; }
         }
       } catch (err) {
-        this.handleApiError(`outletStatus(${outletId})`, err, [404]);
+        this.handleApiError(`outletStatus(${outletId})`, err, [404, 401]);
       }
     }
 
-    // Foot warmers
     try {
       await this.snapi.footWarmingStatus();
       const fw = this.snapi.json as FootWarmingStatusResponse;
@@ -633,19 +617,15 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
         this.hasWarmers = true;
       }
     } catch (err) {
-      this.handleApiError('footWarmingStatus', err, [404]);
+      this.handleApiError('footWarmingStatus', err, [404, 401]);
     }
   }
 
-  /**
-   * Extract the per-side data from a bed object, stripping non-side fields.
-   */
   private extractSides(bed: FamilyStatusResponse['beds'][0]): Record<string, { isInBed: boolean; sleepNumber: number }> {
     const { bedId: _id, status: _s, ...sides } = bed;
     return sides as Record<string, { isInBed: boolean; sleepNumber: number }>;
   }
 
-  /** Returns a flat array of all typed accessory instances across all Maps. */
   private allAccessoryInstances(): Array<{ accessory: PlatformAccessory<SleepIQContext> }> {
     return [
       ...this.occupancyAccessories.values(),
@@ -659,7 +639,20 @@ export class SleepIQPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Log an API error, suppressing expected status codes (e.g. 404 = "not present").
+   * Returns true if the thrown error is an HTTP 401 (session expired / invalid).
+   * The SleepIQ API uses HTTP 401 with body Error.Code 50002 for session expiry.
+   */
+  private isSessionExpired(err: unknown): boolean {
+    try {
+      const parsed = JSON.parse(String(err)) as { statusCode: number };
+      return parsed.statusCode === 401;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Log an API error, suppressing expected status codes (e.g. 404 = not present).
    */
   private handleApiError(context: string, err: unknown, suppressCodes: number[] = []): void {
     try {
