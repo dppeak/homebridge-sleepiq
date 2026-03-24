@@ -6,6 +6,7 @@
     "footerDisplay": "For help or to report issues, visit the [GitHub repository](https://github.com/dppeak/homebridge-sleepiq).",
     "schema": {
         "type": "object",
+        "required": ["email", "password"],
         "properties": {
             "name": {
                 "title": "Name",
@@ -15,7 +16,6 @@
             "email": {
                 "title": "Email",
                 "type": "string",
-                "required": true,
                 "placeholder": "your@email.com",
                 "format": "email",
                 "description": "Your Sleep Number account email address."
@@ -23,14 +23,12 @@
             "password": {
                 "title": "Password",
                 "type": "string",
-                "required": true,
                 "placeholder": "Your Sleep Number password",
                 "description": "Your Sleep Number account password."
             },
             "refreshTime": {
                 "title": "Refresh Time (seconds)",
                 "type": "integer",
-                "required": false,
                 "placeholder": 5,
                 "description": "How often to poll SleepIQ for updates. There is little benefit setting this below 5 seconds.",
                 "minimum": 5,
@@ -39,7 +37,6 @@
             "sendDelay": {
                 "title": "Send Delay (seconds)",
                 "type": "integer",
-                "required": false,
                 "placeholder": 2,
                 "description": "Debounce delay before sending a new sleep number to the bed after adjusting the slider in HomeKit.",
                 "minimum": 0,
@@ -48,7 +45,6 @@
             "warmingTimer": {
                 "title": "Foot Warming Timer",
                 "type": "string",
-                "required": false,
                 "default": "6h",
                 "oneOf": [
                     { "title": "30 minutes", "enum": ["30m"] },

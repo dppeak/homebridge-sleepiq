@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.13 (2026-03-23)
+
+### Bug Fixes
+
+- Fixed `config.schema.json` failing Homebridge schema validation: `required` must be an array at the object level (`"required": ["email", "password"]`), not a boolean property on individual fields. Removed `"required": true/false` from all individual property definitions.
+
+---
+
 ## v6.0.12 (2026-03-23)
 
 ### Changes
 
-- Updated Node.js engine requirement from `>=18.20.4` to `>=20.0.0` — Node 18 reached end of life in April 2025 and is no longer supported. Node v20, v22, and v24 are supported.
+- Updated Node.js engine requirement from `>=18.20.4` to `>=20.0.0` — Node 18 reached end of life in April 2025. Node v20, v22, and v24 are supported.
 
 ---
 
@@ -16,11 +24,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- **Fixed the root cause of all session expiry issues: cookies were being replaced instead of merged.**
-
-  The original plugin used `request-promise-native` with `jar: true`, which maintains a cookie jar that merges cookies from every response. Our rewrite managed cookies manually but replaced the entire cookie string on each response. If the login set three session cookies (A, B, C) and a subsequent API response refreshed only cookie A, cookies B and C were silently discarded — causing the session to break almost immediately after the first successful poll.
-
-  `_storeCookies()` now maintains a `Map<name, value>` cookie jar. New cookies from each response are merged in (existing entries updated, no cookie is ever dropped), exactly matching `jar: true` behaviour. With correct cookie management, sessions should remain valid for their full lifetime without frequent re-authentication.
+- Fixed the root cause of all session expiry issues: cookies were being replaced instead of merged on each API response, causing sessions to break almost immediately after the first successful poll. Cookie management now matches the `jar: true` behaviour of the original plugin.
 
 ---
 
