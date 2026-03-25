@@ -1,6 +1,7 @@
 # Homebridge SleepIQ
 
-[![npm](https://img.shields.io/npm/v/homebridge-sleepiq)](https://www.npmjs.com/package/homebridge-sleepiq)
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+[![npm](https://img.shields.io/npm/v/@dppeak/homebridge-sleepiq)](https://www.npmjs.com/package/@dppeak/homebridge-sleepiq)
 [![Homebridge](https://img.shields.io/badge/homebridge-%5E1.8.0-blueviolet)](https://homebridge.io)
 
 A [Homebridge](https://homebridge.io) plugin for Sleep Number SleepIQ smart beds. Control your Sleep Number settings and monitor bed occupancy directly from HomeKit and Siri.
@@ -30,7 +31,7 @@ Search for `homebridge-sleepiq` in the Homebridge web UI plugin tab and click In
 ### Via npm
 
 ```bash
-npm install -g homebridge-sleepiq
+npm install -g @dppeak/homebridge-sleepiq
 ```
 
 ### From this repository
@@ -67,6 +68,13 @@ Add the platform to your Homebridge `config.json`:
 | `refreshTime` | number | `5` | How often (in seconds) to poll SleepIQ for updates |
 | `sendDelay` | number | `2` | Debounce delay (in seconds) before sending a new sleep number to the bed |
 | `warmingTimer` | string | `"6h"` | Duration for foot warming. Options: `30m`, `1h`, `2h`, `3h`, `4h`, `5h`, `6h` |
+| `enableOccupancySensors` | boolean | `true` | Create occupancy sensors for each side |
+| `enableSleepNumberControls` | boolean | `true` | Create sleep number dimmer controls |
+| `enablePrivacySwitch` | boolean | `true` | Create privacy/pause mode switch |
+| `enableFoundationControls` | boolean | `true` | Create head/foot position controls |
+| `enableOutlets` | boolean | `true` | Create foundation outlet switches |
+| `enableLightstrips` | boolean | `true` | Create foundation lightstrip controls |
+| `enableFootWarmers` | boolean | `true` | Create foot warmer controls |
 
 ---
 
@@ -98,7 +106,7 @@ Foundation accessories are only created if the hardware is detected on your acco
 
 ## Requirements
 
-- Node.js >= 18.20.4
+- Node.js >= 20.0.0
 - Homebridge >= 1.8.0
 
 ---
