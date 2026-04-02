@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.15 (2026-04-01)
+
+### Changes
+
+- Corrected Homebridge 2.0 engine declaration to include `-beta.0` suffix while v2 is still in beta: `^1.8.0 || ^2.0.0-beta.0`
+
+---
+
 ## v6.0.14 (2026-04-01)
 
 ### Changes
 
-- Declared Homebridge 2.0 compatibility — `engines.homebridge` updated to `^1.8.0 || ^2.0.0`. Users will see a green tick in the Homebridge UI readiness check.
+- Declared Homebridge 2.0 compatibility — `engines.homebridge` updated to `^1.8.0 || ^2.0.0-beta.0`. Users will see a green tick in the Homebridge UI v2 readiness check.
 
 ---
 
