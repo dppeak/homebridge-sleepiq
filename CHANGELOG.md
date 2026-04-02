@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v6.0.14 (2026-04-01)
+
+### Changes
+
+- Declared Homebridge 2.0 compatibility — `engines.homebridge` updated to `^1.8.0 || ^2.0.0`. Users will see a green tick in the Homebridge UI readiness check.
+
+---
+
 ## v6.0.13 (2026-03-23)
 
 ### Bug Fixes
 
-- Fixed `config.schema.json` failing Homebridge schema validation: `required` must be an array at the object level (`"required": ["email", "password"]`), not a boolean property on individual fields. Removed `"required": true/false` from all individual property definitions.
+- Fixed `config.schema.json` failing Homebridge schema validation: `required` must be an array at the object level, not a boolean on individual fields
 
 ---
 
@@ -16,7 +24,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changes
 
-- Updated Node.js engine requirement from `>=18.20.4` to `>=20.0.0` — Node 18 reached end of life in April 2025. Node v20, v22, and v24 are supported.
+- Updated Node.js engine requirement to `>=20.0.0` (Node 18 reached end of life April 2025)
 
 ---
 
