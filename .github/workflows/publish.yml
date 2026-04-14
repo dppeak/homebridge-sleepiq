@@ -6,12 +6,14 @@ on:
       - 'v*'
 
 permissions:
-  id-token: write
-  contents: write
+  contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -21,16 +23,20 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - run: npm i -g npm@^11.5.1
-      - run: npm --version
+      - run: node -v && npm -v
       - run: npm ci
       - run: npm run build
-      - run: npm publish --access public
+      - name: Publish with OIDC
+        run: npm publish --access public
         env:
-        NODE_AUTH_TOKEN: ""
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
 
   release:
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: softprops/action-gh-release@v2
